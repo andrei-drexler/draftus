@@ -3,13 +3,17 @@ package main
 import (
 	"flag"
 	"fmt"
+	"strconv"
+	"strings"
 	"math/rand"
 	"os"
 	"os/signal"
-	"strconv"
-	"strings"
-	"sync"
 	"syscall"
+	"io/ioutil"
+	"path/filepath"
+	"encoding/json"
+	"sort"
+	"sync"
 	"time"
 
 	"github.com/bwmarrin/discordgo"
@@ -17,9 +21,14 @@ import (
 
 ////////////////////////////////////////////////////////////////
 
-const commandPrefix = "?draft"
+type commandGroup struct {
+	description string
+	prefix      string
+	commands    []*command
+}
 
 type command struct {
+	group   *commandGroup
 	name    string
 	args    string
 	execute func(string, *discordgo.Session, *discordgo.MessageCreate)
@@ -29,46 +38,58 @@ type command struct {
 var (
 	// Note: we don't initialize commands here in order to avoid an initialization loop
 
-	commandHelp   command
-	commandStart  command
-	commandAbort  command
-	commandAdd    command
-	commandRemove command
-	commandWho    command
-	commandClose  command
-	commandPick   command
+	commandHelp     command
+	commandStart    command
+	commandAbort    command
+	commandAdd      command
+	commandRemove   command
+	commandWho      command
+	commandModerate command
+	commandClose    command
+	commandPick     command
+	commandPromote  command
 
-	commandList = [...]*command{
-		&commandHelp,
-		&commandStart,
-		&commandAbort,
-		&commandAdd,
-		&commandRemove,
-		&commandWho,
-		&commandClose,
-		&commandPick,
+	draftCommands = commandGroup{
+		prefix:      "?draft",
+		description: "Draft commands",
+		commands: []*command{
+			&commandHelp,
+			&commandStart,
+			&commandAbort,
+			&commandAdd,
+			&commandRemove,
+			&commandWho,
+			&commandModerate,
+			&commandClose,
+			&commandPick,
+			&commandPromote,
+		},
+	}
+
+	commandGroups = [...]*commandGroup{
+		&draftCommands,
 	}
 )
 
 func (cmd *command) syntax() string {
-	return commandPrefix + " " + cmd.name + cmd.args
+	return cmd.group.prefix + " " + cmd.name + cmd.args
 }
 
 func (cmd *command) syntaxNoArgs() string {
-	return commandPrefix + " " + cmd.name
+	return cmd.group.prefix + " " + cmd.name
 }
 
 func (cmd *command) syntaxLength() int {
-	return len(commandPrefix) + 1 + len(cmd.name) + len(cmd.args)
+	return len(cmd.group.prefix) + 1 + len(cmd.name) + len(cmd.args)
 }
 
 ////////////////////////////////////////////////////////////////
 
 // Cup status
 const (
-	Inactive = iota
-	Signup   = iota
-	Pickup   = iota
+	CupStatusInactive = iota
+	CupStatusSignup   = iota
+	CupStatusPickup   = iota
 )
 
 // Player counts
@@ -88,81 +109,92 @@ const (
 	CupReportAll = -1
 )
 
+// Minimum amount of time that has to pass between promotions
+const (
+	MinimumPromotionInterval = time.Minute * 15
+)
+
 type (
-	player struct {
-		name string
-		id   string
-		team int
-		next int
+	// Player holds data for a signed up user
+	Player struct {
+		Name string
+		ID   string
+		Team int
+		Next int
 	}
 
-	team struct {
-		first     int
-		last      int
-		nameIndex int
+	// Team holds data for an assembled team
+	Team struct {
+		First int
+		Last  int
+		Name  string
+
+		nameIndex int // only used during initialization
 	}
 
 	pickupSlot struct {
-		team   int
-		player int
+		Team   int
+		Player int
 	}
 
-	cup struct {
-		status                 int
-		pickedPlayers          int
+	// Cup holds data for an ongoing event
+	Cup struct {
+		Status          int
+		Moderated       bool
+		PickedPlayers   int
+		Manager         Player
+		Players         []Player
+		Teams           []Team
+		ChannelID       string
+		GuildID         string
+		StartMessageID  string
+		LastReplyID     string
+		Description     string
+		StartTime       time.Time
+		NextPromoteTime time.Time
+
 		longestTeamName        int // for nicer string formatting
 		longestTeamDescription int // ditto
-		manager                player
-		players                []player
-		teams                  []team
-		channelID              string
-		guildID                string
-		lastSpamID             string
-		description            string
 	}
 )
 
 var (
 	lockCups   sync.Mutex
-	activeCups = make(map[string]*cup)
+	activeCups = make(map[string]*Cup)
 	done       = make(chan bool)
 )
 
 ////////////////////////////////////////////////////////////////
 
-func makePlayer(user *discordgo.User) player {
-	return player{user.Username, user.ID, -1, -1}
+func makePlayer(user *discordgo.User) Player {
+	return Player{
+		Name: user.Username,
+		ID:   user.ID,
+		Team: -1,
+		Next: -1,
+	}
 }
 
-func (currentTeam *team) resetTeam() {
-	currentTeam.first = -1
-	currentTeam.last = -1
+func (currentTeam *Team) resetTeam() {
+	currentTeam.First = -1
+	currentTeam.Last = -1
+	currentTeam.Name = ""
 	currentTeam.nameIndex = -1
-}
-
-func (currentTeam *team) getName() string {
-	attrib, noun := decomposeName(currentTeam.nameIndex)
-	return Attributes[attrib] + " " + Nouns[noun]
-}
-
-func (currentTeam *team) getNameLength() int {
-	attrib, noun := decomposeName(currentTeam.nameIndex)
-	return len(Attributes[attrib]) + 1 + len(Nouns[noun])
 }
 
 ////////////////////////////////////////////////////////////////
 
-func getCup(channelID string) *cup {
+func getCup(channelID string) *Cup {
 	lockCups.Lock()
 	currentCup := activeCups[channelID]
 	lockCups.Unlock()
 	return currentCup
 }
 
-func addCup(channelID string) *cup {
-	currentCup := new(cup)
-	currentCup.status = Signup
-	currentCup.channelID = channelID
+func addCup(channelID string) *Cup {
+	currentCup := new(Cup)
+	currentCup.Status = CupStatusSignup
+	currentCup.ChannelID = channelID
 
 	lockCups.Lock()
 	activeCups[channelID] = currentCup
@@ -177,9 +209,9 @@ func deleteCup(channelID string) {
 	lockCups.Unlock()
 }
 
-func (currentCup *cup) findPlayer(id string) int {
-	for i := range currentCup.players {
-		if currentCup.players[i].id == id {
+func (currentCup *Cup) findPlayer(id string) int {
+	for i := range currentCup.Players {
+		if currentCup.Players[i].ID == id {
 			return i
 		}
 	}
@@ -189,14 +221,14 @@ func (currentCup *cup) findPlayer(id string) int {
 // Returns the nth player in the list of active players
 // that hasn't been assigned to a team yet, or -1 if none.
 // Note: subs are not taken into consideration
-func (currentCup *cup) findAvailablePlayer(nth int) int {
+func (currentCup *Cup) findAvailablePlayer(nth int) int {
 	numActive := currentCup.activePlayerCount()
 	if nth < 0 || nth > numActive {
 		return -1
 	}
 	for i := 0; i < numActive; i++ {
-		player := &currentCup.players[i]
-		if player.team == -1 {
+		player := &currentCup.Players[i]
+		if player.Team == -1 {
 			if nth == 0 {
 				return i
 			}
@@ -206,16 +238,16 @@ func (currentCup *cup) findAvailablePlayer(nth int) int {
 	return -1
 }
 
-func (currentCup *cup) nextAvailablePlayer() int {
+func (currentCup *Cup) nextAvailablePlayer() int {
 	return currentCup.findAvailablePlayer(0)
 }
 
-func (currentCup *cup) isSuperUser(id string) bool {
-	return currentCup.status != Inactive && currentCup.manager.id == id
+func (currentCup *Cup) isSuperUser(id string) bool {
+	return currentCup.Status != CupStatusInactive && currentCup.Manager.ID == id
 }
 
-func (currentCup *cup) targetPlayerCount() int {
-	target := len(currentCup.players)
+func (currentCup *Cup) targetPlayerCount() int {
+	target := len(currentCup.Players)
 	target += TeamSize - 1
 	target -= target % TeamSize
 	if target < MinimumPlayers {
@@ -224,72 +256,50 @@ func (currentCup *cup) targetPlayerCount() int {
 	return target
 }
 
-func (currentCup *cup) activePlayerCount() int {
-	return len(currentCup.teams) * TeamSize
+func (currentCup *Cup) activePlayerCount() int {
+	return len(currentCup.Teams) * TeamSize
 }
 
-func (currentCup *cup) currentPickup() pickupSlot {
-	nthPlayer := currentCup.pickedPlayers / len(currentCup.teams)
-	nthTeam := currentCup.pickedPlayers % len(currentCup.teams)
+func (currentCup *Cup) currentPickup() pickupSlot {
+	nthPlayer := currentCup.PickedPlayers / len(currentCup.Teams)
+	nthTeam := currentCup.PickedPlayers % len(currentCup.Teams)
 
 	// First round is for picking captains, which is done in order.
 	// The second round is for captains making their first pick, which also happens in order.
 	// For rounds 3 and 4, picking order is reversed in order to better balance the teams.
 	if nthPlayer >= 2 && nthPlayer <= 3 {
-		nthTeam = len(currentCup.teams) - 1 - nthTeam
+		nthTeam = len(currentCup.Teams) - 1 - nthTeam
 	}
 
 	return pickupSlot{nthTeam, nthPlayer}
 }
 
-func (currentCup *cup) whoPicks(pickup pickupSlot) *player {
-	if currentCup.status != Pickup {
+func (currentCup *Cup) whoPicks(pickup pickupSlot) *Player {
+	if currentCup.Status != CupStatusPickup {
 		return nil
 	}
-	if pickup.player < 0 || pickup.player >= TeamSize {
+	if pickup.Player < 0 || pickup.Player >= TeamSize {
 		return nil
 	}
-	if pickup.team < 0 || pickup.team >= len(currentCup.teams) {
+	if pickup.Team < 0 || pickup.Team >= len(currentCup.Teams) {
 		return nil
 	}
-	if pickup.player == 0 {
-		return &currentCup.manager
+	if pickup.Player == 0 {
+		return &currentCup.Manager
 	}
-	index := currentCup.teams[pickup.team].first
-	if index < 0 || index >= len(currentCup.players) {
+	index := currentCup.Teams[pickup.Team].First
+	if index < 0 || index >= len(currentCup.Players) {
 		return nil
 	}
-	return &currentCup.players[index]
+	return &currentCup.Players[index]
 }
 
-func (currentCup *cup) chooseTeamNames() {
-	// Re-seed RNG
-	rand.Seed(time.Now().UTC().UnixNano())
-
+func (currentCup *Cup) updateTeamNameCache() {
 	currentCup.longestTeamName = 0
 	currentCup.longestTeamDescription = 0
 
-	for i := 0; i < len(currentCup.teams); i++ {
-		currentTeam := &currentCup.teams[i]
-
-		for retry := 0; retry < 100; retry++ {
-			currentTeam.nameIndex = rand.Intn(TeamNameCombos)
-			attrib, noun := decomposeName(currentTeam.nameIndex)
-			found := false
-			for j := 0; j < i; j++ {
-				otherTeam := &currentCup.teams[j]
-				otherAttrib, otherNoun := decomposeName(otherTeam.nameIndex)
-				if attrib == otherAttrib || noun == otherNoun {
-					found = true
-					break
-				}
-			}
-			if !found {
-				break
-			}
-		}
-
-		length := currentTeam.getNameLength()
+	for i := 0; i < len(currentCup.Teams); i++ {
+		length := len(currentCup.Teams[i].Name)
 		if length > currentCup.longestTeamName {
 			currentCup.longestTeamName = length
 		}
@@ -306,73 +316,100 @@ func (currentCup *cup) chooseTeamNames() {
 	}
 }
 
+func (currentCup *Cup) chooseTeamNames() {
+	// Re-seed RNG
+	rand.Seed(time.Now().UTC().UnixNano())
+
+	for i := 0; i < len(currentCup.Teams); i++ {
+		currentTeam := &currentCup.Teams[i]
+
+		for retry := 0; retry < 100; retry++ {
+			currentTeam.nameIndex = rand.Intn(TeamNameCombos)
+			attrib, noun := decomposeName(currentTeam.nameIndex)
+			found := false
+			for j := 0; j < i; j++ {
+				otherTeam := &currentCup.Teams[j]
+				otherAttrib, otherNoun := decomposeName(otherTeam.nameIndex)
+				if attrib == otherAttrib || noun == otherNoun {
+					found = true
+					break
+				}
+			}
+			if !found {
+				break
+			}
+		}
+		attrib, noun := decomposeName(currentTeam.nameIndex)
+		currentTeam.Name = Attributes[attrib] + " " + Nouns[noun]
+	}
+
+	currentCup.updateTeamNameCache()
+}
+
 // Returns formatted join message or an error
-func (currentCup *cup) addPlayerToTeam(playerIndex int, teamIndex int) (string, error) {
-	if playerIndex < 0 || playerIndex >= len(currentCup.players) {
+func (currentCup *Cup) addPlayerToTeam(playerIndex int, teamIndex int) (string, error) {
+	if playerIndex < 0 || playerIndex >= len(currentCup.Players) {
 		return "", fmt.Errorf("player index out of range: %d", playerIndex)
 	}
-	if teamIndex < 0 || teamIndex >= len(currentCup.teams) {
+	if teamIndex < 0 || teamIndex >= len(currentCup.Teams) {
 		return "", fmt.Errorf("team index out of range: %d", teamIndex)
 	}
 
-	player := &currentCup.players[playerIndex]
-	if player.team != -1 {
-		return "", fmt.Errorf("already assigned to %d", player.team)
+	player := &currentCup.Players[playerIndex]
+	if player.Team != -1 {
+		return "", fmt.Errorf("already assigned to %d", player.Team)
 	}
 
-	player.team = teamIndex
-	team := &currentCup.teams[teamIndex]
-	if team.first == -1 {
-		team.first = playerIndex
-		team.last = playerIndex
+	player.Team = teamIndex
+	team := &currentCup.Teams[teamIndex]
+	if team.First == -1 {
+		team.First = playerIndex
+		team.Last = playerIndex
 	} else {
-		lastPlayer := &currentCup.players[team.last]
-		lastPlayer.next = playerIndex
-		team.last = playerIndex
+		lastPlayer := &currentCup.Players[team.Last]
+		lastPlayer.Next = playerIndex
+		team.Last = playerIndex
 	}
 
-	currentCup.pickedPlayers++
+	currentCup.PickedPlayers++
 
-	message := bold(player.name) + " joined team " + strconv.Itoa(teamIndex+1) + ", " + bold(currentCup.teams[teamIndex].getName())
-	if team.first == playerIndex {
+	message := bold(player.Name) + " joined team " + strconv.Itoa(teamIndex+1) + ", " + bold(currentCup.Teams[teamIndex].Name)
+	if team.First == playerIndex {
 		message += " (as captain)"
 	}
 
 	return message + ".\n", nil
 }
 
-func (currentCup *cup) getLineup(index int) (string, error) {
-	if index < 0 || index >= len(currentCup.teams) {
+func (currentCup *Cup) getLineup(index int) (string, error) {
+	if index < 0 || index >= len(currentCup.Teams) {
 		return "", fmt.Errorf("index out of range: %d", index)
 	}
-	team := &currentCup.teams[index]
+	team := &currentCup.Teams[index]
 	lineup := ""
-	for playerIndex, count := team.first, 0; playerIndex != -1; count++ {
-		player := &currentCup.players[playerIndex]
+	for playerIndex, count := team.First, 0; playerIndex != -1; count++ {
+		player := &currentCup.Players[playerIndex]
 		if count != 0 {
 			lineup += ", "
 		}
-		lineup += player.name
-		playerIndex = player.next
+		lineup += player.Name
+		playerIndex = player.Next
 	}
 	return lineup, nil
 }
 
-func (currentCup *cup) report(selector int) string {
+func (currentCup *Cup) report(selector int) string {
 	message := ""
 
-	switch currentCup.status {
-	case Signup:
+	switch currentCup.Status {
+	case CupStatusSignup:
 		if (selector & CupReportPlayers) != 0 {
-			if len(currentCup.players) == 0 {
+			if len(currentCup.Players) == 0 {
 				message += "No players signed up for the cup so far.\n"
-				if (selector & CupReportNextAction) != 0 {
-					message += "You can be the first by typing " + bold(commandAdd.syntax()) + "\n"
-				}
 			} else {
-				message += numbered(len(currentCup.players), "player") + " signed up so far:\n```"
-				for i := range currentCup.players {
-					message += strconv.Itoa(i+1) + ". " + currentCup.players[i].name + "\n"
+				message += numbered(len(currentCup.Players), "player") + " signed up so far:\n```"
+				for i := range currentCup.Players {
+					message += strconv.Itoa(i+1) + ". " + currentCup.Players[i].Name + "\n"
 				}
 				message += "```\n"
 			}
@@ -381,44 +418,44 @@ func (currentCup *cup) report(selector int) string {
 			message += "Sign up now by typing " + bold(commandAdd.syntax()) + "\n"
 		}
 
-	case Pickup:
+	case CupStatusPickup:
 		active := currentCup.activePlayerCount()
 		if (selector & CupReportTeams) != 0 {
-			if currentCup.pickedPlayers != active {
-				message += fmt.Sprintf("%d/%d players picked, competing in %d teams:\n```\n", currentCup.pickedPlayers, active, len(currentCup.teams))
+			if currentCup.PickedPlayers != active && currentCup.PickedPlayers != 0 {
+				message += fmt.Sprintf("%d teams, with %s picked out of %d:\n```\n", len(currentCup.Teams), numbered(currentCup.PickedPlayers, "player"), active)
 			} else {
-				message += fmt.Sprintf("%d players, competing in %d teams:\n```\n", active, len(currentCup.teams))
+				message += fmt.Sprintf("%d teams, with %d players:\n```\n", len(currentCup.Teams), active)
 			}
-			for i := range currentCup.teams {
+			for i := range currentCup.Teams {
 				lineup, _ := currentCup.getLineup(i)
-				teamDescription := strconv.Itoa(i+1) + ". " + currentCup.teams[i].getName()
+				teamDescription := strconv.Itoa(i+1) + ". " + currentCup.Teams[i].Name
 				message += fmt.Sprintf("%*s : %s\n", -currentCup.longestTeamDescription, teamDescription, lineup)
 			}
 			message += "```\n"
 		}
 
 		if (selector & CupReportPlayers) != 0 {
-			unpicked := active - currentCup.pickedPlayers
+			unpicked := active - currentCup.PickedPlayers
 			if unpicked > 0 {
 				message += strconv.Itoa(unpicked) + " available players:\n```\n"
 				for i := 0; i < active; i++ {
-					player := &currentCup.players[i]
-					if player.team != -1 {
+					player := &currentCup.Players[i]
+					if player.Team != -1 {
 						continue
 					}
-					message += strconv.Itoa(i+1) + ". " + player.name + "\n"
+					message += strconv.Itoa(i+1) + ". " + player.Name + "\n"
 				}
 				message += "\n```\n"
 			}
 		}
 
 		if (selector & CupReportSubs) != 0 {
-			subs := len(currentCup.players) - active
+			subs := len(currentCup.Players) - active
 			if subs > 0 {
 				message += numbered(subs, " substitute player") + ":\n```\n"
-				for i := active; i < len(currentCup.players); i++ {
-					player := &currentCup.players[i]
-					message += strconv.Itoa(i+1) + ". " + player.name + "\n"
+				for i := active; i < len(currentCup.Players); i++ {
+					player := &currentCup.Players[i]
+					message += strconv.Itoa(i+1) + ". " + player.Name + "\n"
 				}
 				message += "\n```\n"
 			}
@@ -429,13 +466,13 @@ func (currentCup *cup) report(selector int) string {
 			who := currentCup.whoPicks(pickup)
 
 			if who != nil {
-				teamName := currentCup.teams[pickup.team].getName()
-				teamDescription := "team " + strconv.Itoa(pickup.team+1) + ", " + bold(teamName)
+				teamName := currentCup.Teams[pickup.Team].Name
+				teamDescription := "team " + strconv.Itoa(pickup.Team+1) + ", " + bold(teamName)
 
-				if pickup.player == 0 {
-					message += bold(who.name) + ", pick a captain for " + teamDescription + ", by typing " + bold(commandPick.syntax()) + "\n"
+				if pickup.Player == 0 {
+					message += bold(who.Name) + ", pick a captain for " + teamDescription + ", by typing " + bold(commandPick.syntax()) + "\n"
 				} else {
-					message += bold(who.name) + ", pick player " + strconv.Itoa(pickup.player+1) + " for " + teamDescription + ", by typing " + bold(commandPick.syntax()) + "\n"
+					message += bold(who.Name) + ", pick the " + nth(pickup.Player+1) + " player for " + teamDescription + ", by typing " + bold(commandPick.syntax()) + "\n"
 				}
 			} else {
 				message += "Good luck and have fun!\n"
@@ -446,19 +483,63 @@ func (currentCup *cup) report(selector int) string {
 	return message
 }
 
-func (currentCup *cup) removeLastSpam(s *discordgo.Session) {
-	if len(currentCup.lastSpamID) > 0 {
-		s.ChannelMessageDelete(currentCup.channelID, currentCup.lastSpamID)
-		currentCup.lastSpamID = ""
+func (currentCup *Cup) removeLastReply(s *discordgo.Session) {
+	if len(currentCup.LastReplyID) > 0 {
+		s.ChannelMessageDelete(currentCup.ChannelID, currentCup.LastReplyID)
+		currentCup.LastReplyID = ""
 	}
 }
 
-func (currentCup *cup) addSpam(s *discordgo.Session, text string) {
-	currentCup.removeLastSpam(s)
-	message, err := s.ChannelMessageSend(currentCup.channelID, text)
-	if err == nil {
-		currentCup.lastSpamID = message.ID
+func (currentCup *Cup) reply(s *discordgo.Session, text string, report int) {
+	currentCup.removeLastReply(s)
+	if report != 0 {
+		text += currentCup.report(report)
 	}
+	message, err := s.ChannelMessageSend(currentCup.ChannelID, text)
+	if err == nil {
+		currentCup.LastReplyID = message.ID
+	}
+}
+
+func (currentCup *Cup) deleteAndReply(s *discordgo.Session, m *discordgo.MessageCreate, text string, report int) {
+	currentCup.removeLastReply(s)
+	s.ChannelMessageDelete(m.ChannelID, m.ID)
+	currentCup.reply(s, text, report)
+}
+
+func (currentCup *Cup) unpinAll(s *discordgo.Session) {
+	allPinned, err := s.ChannelMessagesPinned(currentCup.ChannelID)
+	if err == nil {
+		for _, pinnedMessage := range allPinned {
+			if pinnedMessage.Author.ID == BotID {
+				s.ChannelMessageUnpin(pinnedMessage.ChannelID, pinnedMessage.ID)
+			}
+		}
+	}
+}
+
+func (currentCup *Cup) save() error {
+	if len(DataDir) <= 0 {
+		return os.ErrInvalid
+	}
+
+	err := os.MkdirAll(DataDir, FilePermission)
+	if err != nil {
+		return err
+	}
+
+	contents, err := json.Marshal(currentCup)
+	if err != nil {
+		return err
+	}
+
+	path := filepath.Join(DataDir, currentCup.ChannelID)
+	err = ioutil.WriteFile(path, contents, FilePermission)
+	if err != nil {
+		return err
+	}
+
+	return nil
 }
 
 ////////////////////////////////////////////////////////////////
@@ -469,6 +550,26 @@ func numbered(count int, singular string) string {
 		result += "s"
 	}
 	return result
+}
+
+func nth(index int) string {
+	if index == 1 {
+		return "1st"
+	}
+	if index == 2 {
+		return "2nd"
+	}
+	if index == 3 {
+		return "3rd"
+	}
+	return fmt.Sprintf("%dth", index)
+}
+
+func escape(s string) string {
+	s = strings.Replace(s, "_", "\\_", -1)
+	s = strings.Replace(s, "*", "\\*", -1)
+	s = strings.Replace(s, "`", "\\`", -1)
+	return s
 }
 
 func bold(s string) string {
@@ -483,8 +584,62 @@ func bolditalic(s string) string {
 	return "***" + s + "***"
 }
 
-func mention(who *player) string {
-	return "<@" + who.id + ">"
+func mention(who *Player) string {
+	return "<@" + who.ID + ">"
+}
+
+////////////////////////////////////////////////////////////////
+
+// Common longer durations
+const (
+	Day   = 24 * time.Hour
+	Week  = 7 * Day
+	Month = 30 * Day
+	Year  = 365 * Day
+)
+
+func humanize(duration time.Duration) string {
+	if duration < 0 {
+		duration = -duration
+	}
+
+	type relevantDuration struct {
+		time.Duration
+		Name string
+	}
+
+	var (
+		relevantDurations = [...]relevantDuration{
+			{time.Second, "second"},
+			{time.Minute, "minute"},
+			{time.Hour, "hour"},
+			{Day, "day"},
+			{Week, "week"},
+			{Month, "month"},
+			{12 * Month, "year"}, // for a humanized string, this is better than the exact value; e.g. for 345 days ~= 12 months < 1 year!
+		}
+	)
+
+	n := sort.Search(len(relevantDurations), func(i int) bool {
+		rounded := duration
+		if i > 0 {
+			// round up to a multiple of the previous unit
+			// e.g. when considering hours, round up to the next minute
+			// this way, 59 minutes and 33 seconds = 1 hour
+			rounded += relevantDurations[i-1].Duration / 2
+		}
+		return relevantDurations[i].Duration > rounded
+	}) - 1
+
+	if n < 0 {
+		n = 0
+	}
+
+	duration += relevantDurations[n].Duration / 2
+	nano := duration.Nanoseconds()
+	major := nano / relevantDurations[n].Nanoseconds()
+
+	return numbered(int(major), relevantDurations[n].Name)
 }
 
 ////////////////////////////////////////////////////////////////
@@ -516,37 +671,43 @@ func messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 		return
 	}
 
-	if len(m.Content) < len(commandPrefix) {
-		return
-	}
+	for _, group := range commandGroups {
+		if len(m.Content) < len(group.prefix) {
+			continue
+		}
 
-	prefix := strings.ToLower(m.Content[:len(commandPrefix)])
-	if prefix != commandPrefix {
-		return
-	}
+		prefix := strings.ToLower(m.Content[:len(group.prefix)])
+		if prefix != group.prefix {
+			continue
+		}
 
-	command := m.Content[len(commandPrefix):]
-	command = strings.TrimSpace(command)
+		command := m.Content[len(group.prefix):]
+		command = strings.TrimSpace(command)
 
-	var token string
-	token, command = parseToken(command)
+		var token string
+		token, command = parseToken(command)
 
-	if len(token) == 0 {
-		commandHelp.execute("", s, m)
-		return
-	}
-
-	token = strings.ToLower(token)
-
-	for _, cmd := range commandList {
-		if cmd.name == token {
-			cmd.execute(command, s, m)
+		if len(token) == 0 {
+			commandHelp.execute("", s, m)
 			return
 		}
+
+		token = strings.ToLower(token)
+
+		for _, cmd := range group.commands {
+			if cmd.name == token {
+				cmd.execute(command, s, m)
+				return
+			}
+		}
+
+		_, _ = s.ChannelMessageSend(m.ChannelID, "Unknown command, '"+token+"'.\n")
+		commandHelp.execute("", s, m)
+		return
+
 	}
 
-	_, _ = s.ChannelMessageSend(m.ChannelID, "Unknown command, '"+token+"'.\n")
-	commandHelp.execute("", s, m)
+	handleChat(s, m)
 }
 
 var (
@@ -556,37 +717,27 @@ var (
 func handleStart(args string, s *discordgo.Session, m *discordgo.MessageCreate) {
 	currentCup := getCup(m.ChannelID)
 	if currentCup != nil {
-		var message string
-		if currentCup.manager.id == m.Author.ID {
-			message = "You"
+		message := bold(escape(m.Author.Username)) + ", "
+		if currentCup.Manager.ID == m.Author.ID {
+			message += "you"
 		} else {
-			message = bold(currentCup.manager.name)
+			message += bold(currentCup.Manager.Name)
 		}
-		message += " already started the cup"
-
-		if currentCup.status == Signup {
-			if currentCup.findPlayer(m.Author.ID) == -1 {
-				message += ", you can sign up with " + bold(commandAdd.syntax())
-			} else {
-				message += ", try finding more players to sign up with " + bold(commandAdd.syntax())
-			}
-		} else {
-			message += "."
-		}
-
+		message += " already started the cup."
 		_, _ = s.ChannelMessageSend(m.ChannelID, message)
+		currentCup.reply(s, "", CupReportAll)
 		return
 	}
 
 	currentCup = addCup(m.ChannelID)
-	currentCup.manager = makePlayer(m.Author)
-	currentCup.description = args
+	currentCup.Manager = makePlayer(m.Author)
+	currentCup.Description = args
 
 	channel, err := s.Channel(m.ChannelID)
 	if err != nil {
 		fmt.Println("Could not retrieve channel info:", err.Error())
 	} else {
-		currentCup.guildID = channel.GuildID
+		currentCup.GuildID = channel.GuildID
 	}
 
 	// Just a note to self on retrieving the list of roles for a given user
@@ -604,16 +755,24 @@ func handleStart(args string, s *discordgo.Session, m *discordgo.MessageCreate) 
 		}
 	}
 
-	message := "Hey, @everyone!\n\nRegistration is now open for a new draft cup, managed by " + bold(m.Author.Username) + ".\n\n"
+	text := "Hey, @everyone!\n\nRegistration is now open for a new draft cup, managed by " + bold(escape(m.Author.Username)) + ".\n\n"
 	if len(args) > 0 {
-		message += args + "\n\n"
+		text += args + "\n\n"
 	}
-	message += "You can sign up now by typing " + bold(commandAdd.syntax())
+	text += "You can sign up now by typing " + bold(commandAdd.syntax())
 
-	_, err = s.ChannelMessageSend(m.ChannelID, message)
+	currentCup.StartTime = time.Now()
+	currentCup.NextPromoteTime = currentCup.StartTime.Add(MinimumPromotionInterval)
+
+	s.ChannelMessageDelete(m.ChannelID, m.ID)
+	message, err := s.ChannelMessageSend(currentCup.ChannelID, text)
 	if err != nil {
 		fmt.Println("Unable to send cup start message, aborting cup: ", err)
-		deleteCup(m.ChannelID)
+		deleteCup(currentCup.ChannelID)
+	} else {
+		currentCup.unpinAll(s)
+		currentCup.StartMessageID = message.ID
+		s.ChannelMessagePin(currentCup.ChannelID, message.ID)
 	}
 }
 
@@ -625,7 +784,7 @@ func handleAbort(args string, s *discordgo.Session, m *discordgo.MessageCreate) 
 	}
 
 	if !currentCup.isSuperUser(m.Author.ID) {
-		_, _ = s.ChannelMessageSend(m.ChannelID, "Only **"+currentCup.manager.name+"**, the cup manager, can abort it.")
+		_, _ = s.ChannelMessageSend(m.ChannelID, "Only "+bold(currentCup.Manager.Name)+", the cup manager, can abort it.")
 		return
 	}
 
@@ -635,37 +794,41 @@ func handleAbort(args string, s *discordgo.Session, m *discordgo.MessageCreate) 
 
 func handleAdd(args string, s *discordgo.Session, m *discordgo.MessageCreate) {
 	currentCup := getCup(m.ChannelID)
-	if currentCup == nil || currentCup.status == Inactive {
-		_, _ = s.ChannelMessageSend(m.ChannelID, "No cup in progress. Try starting one with "+bold(commandStart.syntax()))
+	if currentCup == nil || currentCup.Status == CupStatusInactive {
+		_, _ = s.ChannelMessageSend(m.ChannelID, "No cup in progress in this channel. You can start one with "+bold(commandStart.syntax()))
 		return
 	}
 
-	switch currentCup.status {
-	case Signup:
+	switch currentCup.Status {
+	case CupStatusPickup:
+	case CupStatusSignup:
 		before := currentCup.findPlayer(m.Author.ID)
-		if before != -1 && !activeHacks.disableAlreadySignedUpCheck {
-			_, _ = s.ChannelMessageSend(m.ChannelID, bold(m.Author.Username)+", you're already registered for this cup ("+strconv.Itoa(before+1)+"/"+strconv.Itoa(len(currentCup.players))+").")
+		if before != -1 && !activeHacks.allowDuplicates {
+			message := bold(escape(m.Author.Username)) + ", you're already registered for this cup (" + nth(before+1) + " of " + strconv.Itoa(len(currentCup.Players)) + ")."
+			_, _ = s.ChannelMessageSend(m.ChannelID, message)
+			currentCup.reply(s, "", CupReportAll)
 		} else {
-			currentCup.players = append(currentCup.players, makePlayer(m.Author))
-			currentCup.removeLastSpam(s)
-			_, _ = s.ChannelMessageSend(m.ChannelID, bold(m.Author.Username)+" joined the cup.\n")
-			currentCup.addSpam(s, "\n"+currentCup.report(CupReportPlayers|CupReportNextAction))
+			currentCup.Players = append(currentCup.Players, makePlayer(m.Author))
+			currentCup.deleteAndReply(s, m, "", CupReportAll)
 		}
+
 	default:
-		_, _ = s.ChannelMessageSend(m.ChannelID, "Sorry, **"+m.Author.Username+"**, cup is no longer open for signup.")
+		message := "Sorry, " + bold(escape(m.Author.Username)) + ", cup is no longer open for signup."
+		_, _ = s.ChannelMessageSend(m.ChannelID, message)
+		currentCup.reply(s, "", CupReportAll)
 	}
 }
 
 func handleRemove(args string, s *discordgo.Session, m *discordgo.MessageCreate) {
 	currentCup := getCup(m.ChannelID)
 	if currentCup == nil {
-		_, _ = s.ChannelMessageSend(m.ChannelID, "No cup in progress, anyway.")
+		_, _ = s.ChannelMessageSend(m.ChannelID, "No cup in progress in this channel, anyway.")
 		return
 	}
 
-	switch currentCup.status {
-	case Signup:
-		if len(currentCup.players) == 0 {
+	switch currentCup.Status {
+	case CupStatusSignup:
+		if len(currentCup.Players) == 0 {
 			_, _ = s.ChannelMessageSend(m.ChannelID, "No players to remove, nobody has signed up for the cup yet.")
 			return
 		}
@@ -675,27 +838,28 @@ func handleRemove(args string, s *discordgo.Session, m *discordgo.MessageCreate)
 		token, args = parseToken(args)
 		if len(token) > 0 {
 			if !currentCup.isSuperUser(m.Author.ID) {
-				message := "Only the cup manager, **" + currentCup.manager.name + "**, can remove other players.\n"
+				message := "Only the cup manager, " + bold(currentCup.Manager.Name) + ", can remove other players.\n"
 				if currentCup.findPlayer(m.Author.ID) != -1 {
 					message += "You can remove yourself by typing " + bold(commandRemove.syntaxNoArgs())
 				}
 				_, _ = s.ChannelMessageSend(m.ChannelID, message)
+				currentCup.reply(s, "", CupReportAll)
 				return
 			}
 
 			index, err := strconv.Atoi(token)
 			if err != nil {
-				message := bold(m.Author.Username) + ", '" + token + "' doesn't look like a number, either leave it out (to remove yourself from the list of players) or specify an actual player number.\n\n" +
-					currentCup.report(CupReportPlayers)
+				message := bold(escape(m.Author.Username)) + ", '" + token + "' doesn't look like a number, either leave it out (to remove yourself from the list of players) or specify an actual player number.\n\n"
 				_, _ = s.ChannelMessageSend(m.ChannelID, message)
+				currentCup.reply(s, "", CupReportAll)
 				return
 			}
 			index-- // 0-based
 
-			if index < 0 || index >= len(currentCup.players) {
-				message := bold(m.Author.Username) + ", " + token + " is not a valid player number.\n\n" +
-					currentCup.report(CupReportPlayers)
+			if index < 0 || index >= len(currentCup.Players) {
+				message := bold(escape(m.Author.Username)) + ", " + token + " is not a valid player number."
 				_, _ = s.ChannelMessageSend(m.ChannelID, message)
+				currentCup.reply(s, "", CupReportAll)
 				return
 			}
 
@@ -703,14 +867,14 @@ func handleRemove(args string, s *discordgo.Session, m *discordgo.MessageCreate)
 		} else {
 			which = currentCup.findPlayer(m.Author.ID)
 			if which == -1 {
-				_, _ = s.ChannelMessageSend(m.ChannelID, m.Author.Username+", you're not registered for this cup anyway.")
+				_, _ = s.ChannelMessageSend(m.ChannelID, bold(escape(m.Author.Username))+", you're not registered for this cup anyway.")
+				currentCup.reply(s, "", CupReportAll)
 				return
 			}
 		}
 
-		name := currentCup.players[which].name
-		currentCup.players = append(currentCup.players[:which], currentCup.players[which+1:]...)
-		_, _ = s.ChannelMessageSend(m.ChannelID, "Removed player **"+name+"** ("+strconv.Itoa(len(currentCup.players))+" remaining).")
+		currentCup.Players = append(currentCup.Players[:which], currentCup.Players[which+1:]...)
+		currentCup.deleteAndReply(s, m, "", CupReportAll)
 
 	default:
 		_, _ = s.ChannelMessageSend(m.ChannelID, "Cup is not currently open for signup, anyway.")
@@ -720,28 +884,27 @@ func handleRemove(args string, s *discordgo.Session, m *discordgo.MessageCreate)
 func handleClose(args string, s *discordgo.Session, m *discordgo.MessageCreate) {
 	currentCup := getCup(m.ChannelID)
 	if currentCup == nil {
-		_, _ = s.ChannelMessageSend(m.ChannelID, "No cup in progress, no sign-ups to close.")
+		_, _ = s.ChannelMessageSend(m.ChannelID, "No cup in progress in this channel, no sign-ups to close.")
+		return
+	}
+	if !currentCup.isSuperUser(m.Author.ID) {
+		_, _ = s.ChannelMessageSend(m.ChannelID, "Only "+bold(currentCup.Manager.Name)+", the cup manager, can close it.")
 		return
 	}
 
-	switch currentCup.status {
-	case Signup:
-		if !currentCup.isSuperUser(m.Author.ID) {
-			_, _ = s.ChannelMessageSend(m.ChannelID, "Only "+bold(currentCup.manager.name)+", the cup manager, can close it.")
-			return
-		}
-
+	switch currentCup.Status {
+	case CupStatusSignup:
 		// Hack to allow testing
 		if activeHacks.fillUpOnClose {
-			if len(currentCup.players) == 0 {
-				currentCup.players = append(currentCup.players, currentCup.manager)
+			if len(currentCup.Players) == 0 {
+				currentCup.Players = append(currentCup.Players, currentCup.Manager)
 			}
-			for i := len(currentCup.players); i < 19; i++ {
-				currentCup.players = append(currentCup.players, currentCup.players[0])
+			for i := len(currentCup.Players); i < 19; i++ {
+				currentCup.Players = append(currentCup.Players, currentCup.Players[0])
 			}
 		}
 
-		signedUp := len(currentCup.players)
+		signedUp := len(currentCup.Players)
 		if signedUp < MinimumPlayers {
 			var who string
 			if signedUp == 0 {
@@ -749,7 +912,8 @@ func handleClose(args string, s *discordgo.Session, m *discordgo.MessageCreate) 
 			} else {
 				who = "Only " + numbered(signedUp, "player")
 			}
-			_, _ = s.ChannelMessageSend(m.ChannelID, who+" signed up, cup aborted.")
+			s.ChannelMessageDelete(m.ChannelID, m.ID)
+			_, _ = s.ChannelMessageSend(currentCup.ChannelID, who+" signed up, cup aborted.")
 			deleteCup(m.ChannelID)
 			return
 		}
@@ -759,18 +923,21 @@ func handleClose(args string, s *discordgo.Session, m *discordgo.MessageCreate) 
 		if len(token) != 0 {
 			count, err := strconv.Atoi(token)
 			if err != nil {
-				message := bold(m.Author.Username) + ", '" + token + "' doesn't look like a number, either leave it out or specify an actual number of players to keep.\n"
+				message := bold(escape(m.Author.Username)) + ", '" + token + "' doesn't look like a number, either leave it out or specify an actual number of players to keep.\n"
 				_, _ = s.ChannelMessageSend(m.ChannelID, message)
-				return
-			}
-			if count < MinimumPlayers {
-				message := bold(m.Author.Username) + ", you need at least " + strconv.Itoa(MinimumPlayers) + " players for the cup to start.\n"
-				_, _ = s.ChannelMessageSend(m.ChannelID, message)
+				currentCup.reply(s, "", CupReportAll)
 				return
 			}
 			if count > signedUp {
-				message := bold(m.Author.Username) + ", " + token + " players haven't signed up yet.\n"
+				message := bold(escape(m.Author.Username)) + ", " + token + " players haven't signed up yet.\n"
 				_, _ = s.ChannelMessageSend(m.ChannelID, message)
+				currentCup.reply(s, "", CupReportAll)
+				return
+			}
+			if count < MinimumPlayers {
+				message := bold(escape(m.Author.Username)) + ", you need to keep at least " + strconv.Itoa(MinimumPlayers) + " players.\n"
+				_, _ = s.ChannelMessageSend(m.ChannelID, message)
+				currentCup.reply(s, "", CupReportAll)
 				return
 			}
 			signedUp = count
@@ -778,170 +945,271 @@ func handleClose(args string, s *discordgo.Session, m *discordgo.MessageCreate) 
 
 		numTeams := signedUp / TeamSize
 
-		currentCup.status = Pickup
-		currentCup.teams = make([]team, numTeams)
+		currentCup.Status = CupStatusPickup
+		currentCup.Teams = make([]Team, numTeams)
 		for i := 0; i < numTeams; i++ {
-			currentTeam := &currentCup.teams[i]
+			currentTeam := &currentCup.Teams[i]
 			currentTeam.resetTeam()
 		}
 		currentCup.chooseTeamNames()
 
 		message := fmt.Sprintf("Cup registration now closed. The %d competing teams are:\n```\n", numTeams)
 		for i := 0; i < numTeams; i++ {
-			message += fmt.Sprintf("%d. %s\n", i+1, currentCup.teams[i].getName())
+			message += fmt.Sprintf("%d. %s\n", i+1, currentCup.Teams[i].Name)
 		}
 		message += "```\n"
-		message += currentCup.report(CupReportPlayers | CupReportSubs | CupReportNextAction)
-
-		currentCup.removeLastSpam(s)
-
-		_, _ = s.ChannelMessageSend(m.ChannelID, message)
+		currentCup.deleteAndReply(s, m, message, CupReportAll)
 
 	default:
-		_, _ = s.ChannelMessageSend(m.ChannelID, "Too late, **"+m.Author.Username+"**, registration for this cup is already closed.")
+		_, _ = s.ChannelMessageSend(m.ChannelID, "Too late, "+bold(escape(m.Author.Username))+", registration for this cup is already closed.")
 	}
 }
 
 func handlePick(args string, s *discordgo.Session, m *discordgo.MessageCreate) {
 	currentCup := getCup(m.ChannelID)
 	if currentCup == nil {
-		_, _ = s.ChannelMessageSend(m.ChannelID, "No cup in progress. You can start one with "+bold(commandStart.syntax()))
+		_, _ = s.ChannelMessageSend(m.ChannelID, "No cup in progress in this channel. You can start one with "+bold(commandStart.syntax()))
 		return
 	}
 
-	switch currentCup.status {
-	case Signup:
-		message := "**" + m.Author.Username + "**, we're not picking players yet.\n" +
-			"Still waiting for everyone to register by typing " + bold(commandAdd.syntax())
+	switch currentCup.Status {
+	case CupStatusSignup:
+		message := bold(escape(m.Author.Username)) + ", we're not picking players yet.\n"
 		_, _ = s.ChannelMessageSend(m.ChannelID, message)
+		currentCup.reply(s, "", CupReportAll)
 		return
 
-	case Pickup:
+	case CupStatusPickup:
 		pickup := currentCup.currentPickup()
 		who := currentCup.whoPicks(pickup)
 		numActive := currentCup.activePlayerCount()
 
 		if who == nil {
-			_, _ = s.ChannelMessageSend(m.ChannelID, m.Author.Username+", it's not your turn to pick.\n")
+			_, _ = s.ChannelMessageSend(m.ChannelID, bold(escape(m.Author.Username))+", it's not your turn to pick.\n")
+			currentCup.reply(s, "", CupReportAll^CupReportSubs)
 			return
 		}
 
-		if who.id != m.Author.ID {
-			_, _ = s.ChannelMessageSend(m.ChannelID, m.Author.Username+", it's not your turn to pick, but "+bold(who.name)+"'s.\n")
+		if who.ID != m.Author.ID {
+			_, _ = s.ChannelMessageSend(m.ChannelID, bold(escape(m.Author.Username))+", it's not your turn to pick, but "+bold(who.Name)+"'s.\n")
+			currentCup.reply(s, "", CupReportAll^CupReportSubs)
 			return
 		}
 
 		var token string
 		token, args = parseToken(args)
 		if len(token) == 0 {
-			_, _ = s.ChannelMessageSend(m.ChannelID, bold(m.Author.Username)+", you need to specify a number from 1 to "+strconv.Itoa(numActive)+".")
+			_, _ = s.ChannelMessageSend(m.ChannelID, bold(escape(m.Author.Username))+", you need to specify a player number.")
+			currentCup.reply(s, "", CupReportAll^CupReportSubs)
 			return
 		}
 		index, err := strconv.Atoi(token)
 		if err != nil {
-			_, _ = s.ChannelMessageSend(m.ChannelID, bold(m.Author.Username)+", '"+token+"' doesn't look like a number. You need to specify a number from 1 to "+strconv.Itoa(numActive)+".")
+			_, _ = s.ChannelMessageSend(m.ChannelID, bold(escape(m.Author.Username))+", '"+token+"' doesn't look like a number. You need to specify a player number.")
+			currentCup.reply(s, "", CupReportAll^CupReportSubs)
 			return
 		}
 		index-- // 0-based
 
-		if index < 0 || index >= len(currentCup.players) {
-			currentCup.removeLastSpam(s)
-			_, _ = s.ChannelMessageSend(m.ChannelID, bold(m.Author.Username)+", '"+token+"' is not a valid player number.\n")
-			currentCup.addSpam(s, currentCup.report(CupReportPlayers|CupReportNextAction))
+		if index < 0 || index >= len(currentCup.Players) {
+			_, _ = s.ChannelMessageSend(m.ChannelID, bold(escape(m.Author.Username))+", '"+token+"' is not a valid player number.")
+			currentCup.reply(s, "", CupReportAll^CupReportSubs)
 			return
 		}
 
-		if index >= numActive && index < len(currentCup.players) {
-			sub := &currentCup.players[index]
-			currentCup.removeLastSpam(s)
-			_, _ = s.ChannelMessageSend(m.ChannelID, bold(m.Author.Username)+", you can't pick "+bold(sub.name)+", he's only registered as a substitute.\n")
-			currentCup.addSpam(s, currentCup.report(CupReportPlayers|CupReportNextAction))
-			return
-		}
-
-		selected := &currentCup.players[index]
-		if selected.team != -1 {
-			team := currentCup.teams[selected.team]
-			message := bold(selected.name) + " already on team " + strconv.Itoa(selected.team+1) + ", " + bold(team.getName()) + ".\n"
-			currentCup.removeLastSpam(s)
+		if index >= numActive && index < len(currentCup.Players) {
+			sub := &currentCup.Players[index]
+			message := bold(escape(m.Author.Username)) + ", you can't pick " + bold(sub.Name) + ", he's only registered as a substitute."
 			_, _ = s.ChannelMessageSend(m.ChannelID, message)
-			currentCup.addSpam(s, currentCup.report(CupReportPlayers|CupReportNextAction))
+			currentCup.reply(s, "", CupReportAll^CupReportSubs)
 			return
 		}
 
-		text, _ := currentCup.addPlayerToTeam(index, pickup.team)
+		selected := &currentCup.Players[index]
+		if selected.Team != -1 {
+			team := currentCup.Teams[selected.Team]
+			message := bold(selected.Name) + " already on team " + strconv.Itoa(selected.Team+1) + ", " + bold(team.Name)
+			_, _ = s.ChannelMessageSend(m.ChannelID, message)
+			currentCup.reply(s, "", CupReportAll^CupReportSubs)
+			return
+		}
+
+		text, _ := currentCup.addPlayerToTeam(index, pickup.Team)
 
 		// The last player isn't picked, but automatically assigned to the remaining slot.
-		if currentCup.pickedPlayers == numActive-1 {
-			currentCup.removeLastSpam(s)
+		if currentCup.PickedPlayers == numActive-1 {
+			currentCup.removeLastReply(s)
+			s.ChannelMessageDelete(m.ChannelID, m.ID)
 
 			lastPlayer := currentCup.nextAvailablePlayer()
 			lastSlot := currentCup.currentPickup()
-			lastJoin, _ := currentCup.addPlayerToTeam(lastPlayer, lastSlot.team)
+			lastJoin, _ := currentCup.addPlayerToTeam(lastPlayer, lastSlot.Team)
 			text += lastJoin
 
 			// We send the last two join messages separately, instead of merging them with the final report.
 			// This way, the last two players to get picked aren't highlighted at the end if the report mentions @everyone.
-			_, _ = s.ChannelMessageSend(m.ChannelID, text)
+			_, _ = s.ChannelMessageSend(currentCup.ChannelID, text)
 
-			// We unpin all our previously pinned messages
-			allPinned, err := s.ChannelMessagesPinned(m.ChannelID)
-			if err == nil {
-				for _, pinnedMessage := range allPinned {
-					if pinnedMessage.Author.ID == BotID {
-						s.ChannelMessageUnpin(pinnedMessage.ChannelID, pinnedMessage.ID)
-					}
-				}
-			}
+			currentCup.unpinAll(s)
 
 			text = "Teams are now complete and the games can begin!\n" +
-				bold(currentCup.manager.name) + " will take things from here, setting up matches and tracking scores.\n\n" +
+				bold(currentCup.Manager.Name) + " will take things from here, setting up matches and tracking scores.\n\n" +
 				currentCup.report(CupReportTeams|CupReportSubs|CupReportNextAction) + "@everyone"
 
-			lastMessage, err := s.ChannelMessageSend(m.ChannelID, text)
+			lastMessage, err := s.ChannelMessageSend(currentCup.ChannelID, text)
 			if err == nil {
 				s.ChannelMessagePin(lastMessage.ChannelID, lastMessage.ID)
 			}
 
-			deleteCup(m.ChannelID)
+			deleteCup(currentCup.ChannelID)
 			return
 		}
 
-		currentCup.removeLastSpam(s)
-		_, _ = s.ChannelMessageSend(m.ChannelID, text)
-		currentCup.addSpam(s, "\n"+currentCup.report(CupReportPlayers|CupReportNextAction))
+		currentCup.removeLastReply(s)
+		s.ChannelMessageDelete(m.ChannelID, m.ID)
+		_, _ = s.ChannelMessageSend(currentCup.ChannelID, text)
+		currentCup.reply(s, "", CupReportAll^CupReportSubs)
 
 	default:
-		_, _ = s.ChannelMessageSend(m.ChannelID, "Sorry, **"+m.Author.Username+"**, we're not picking players at this point.")
+		_, _ = s.ChannelMessageSend(m.ChannelID, "Sorry, "+bold(escape(m.Author.Username))+", we're not picking players at this point.")
+		currentCup.reply(s, "", CupReportAll)
 		return
 	}
+}
+
+func handlePromote(args string, s *discordgo.Session, m *discordgo.MessageCreate) {
+	currentCup := getCup(m.ChannelID)
+	if currentCup == nil || currentCup.Status == CupStatusInactive {
+		_, _ = s.ChannelMessageSend(m.ChannelID, "No cup in progress in this channel. You can start one with "+bold(commandStart.syntax()))
+		return
+	}
+
+	if currentCup.Status != CupStatusSignup {
+		_, _ = s.ChannelMessageSend(m.ChannelID, "Cup can only be promoted when registration is open.")
+		return
+	}
+
+	s.ChannelMessageDelete(m.ChannelID, m.ID)
+
+	now := time.Now()
+	remaining := currentCup.NextPromoteTime.Sub(now)
+	if remaining > 0 {
+		_, _ = s.ChannelMessageSend(m.ChannelID, "Too soon to promote, "+bold(escape(m.Author.Username))+". You can try again in "+humanize(remaining)+".")
+		return
+	}
+
+	currentCup.NextPromoteTime = now.Add(MinimumPromotionInterval)
+
+	text := "Hey, @everyone!\n\nDon't forget that registration is now open for a new draft cup, managed by " + bold(escape(currentCup.Manager.Name)) + ".\n"
+	if len(currentCup.Description) > 0 {
+		text += "\n" + currentCup.Description
+	}
+	_, _ = s.ChannelMessageSend(m.ChannelID, text)
+	currentCup.reply(s, "", CupReportAll)
 }
 
 func handleWho(args string, s *discordgo.Session, m *discordgo.MessageCreate) {
 	currentCup := getCup(m.ChannelID)
-	if currentCup == nil || currentCup.status == Inactive {
-		_, _ = s.ChannelMessageSend(m.ChannelID, "No cup in progress. You can start one with "+bold(commandStart.syntax()))
+	if currentCup == nil || currentCup.Status == CupStatusInactive {
+		_, _ = s.ChannelMessageSend(m.ChannelID, "No cup in progress in this channel. You can start one with "+bold(commandStart.syntax()))
 		return
 	}
-	_, _ = s.ChannelMessageSend(m.ChannelID, currentCup.report(CupReportAll))
+	currentCup.deleteAndReply(s, m, "", CupReportAll)
+
+	if activeHacks.saveOnWho {
+		currentCup.save()
+	}
 }
 
-func handleHelp(args string, s *discordgo.Session, m *discordgo.MessageCreate) {
-	maxSyntaxLength := 0
-	for _, cmd := range commandList {
-		length := cmd.syntaxLength()
-		if length > maxSyntaxLength {
-			maxSyntaxLength = length
+func handleModerate(args string, s *discordgo.Session, m *discordgo.MessageCreate) {
+	currentCup := getCup(m.ChannelID)
+	if currentCup == nil || currentCup.Status == CupStatusInactive {
+		_, _ = s.ChannelMessageSend(m.ChannelID, bold(escape(m.Author.Username))+", moderation can only be enabled when a cup is active.\n")
+		currentCup.reply(s, "", CupReportAll^CupReportSubs)
+		return
+	}
+
+	if m.Author.ID != currentCup.Manager.ID {
+		_, _ = s.ChannelMessageSend(m.ChannelID, "Only "+bold(currentCup.Manager.Name)+", the cup manager, can enable or disable moderation.")
+		currentCup.reply(s, "", CupReportAll^CupReportSubs)
+		return
+	}
+
+	moderation := true
+
+	var token string
+	token, args = parseToken(args)
+	token = strings.ToLower(token)
+
+	if len(token) > 0 {
+		if token == "on" {
+			moderation = true
+		} else if token == "off" {
+			moderation = false
+		} else {
+			message := bold(escape(m.Author.Username)) + ", '" + token + "' is not a valid option. You need to specify either **on** or **off** after " + bold(commandModerate.syntaxNoArgs())
+			_, _ = s.ChannelMessageSend(m.ChannelID, message)
+			currentCup.reply(s, "", CupReportAll^CupReportSubs)
+			return
 		}
 	}
 
-	message := "Supported commands:\n```Note: arguments marked [] are optional, <> are mandatory.\n\n"
-	for _, cmd := range commandList {
-		message += fmt.Sprintf("%*s : %s\n", -maxSyntaxLength, cmd.syntax(), cmd.help)
+	if moderation == currentCup.Moderated {
+		if currentCup.Moderated {
+			_, _ = s.ChannelMessageSend(m.ChannelID, bold(escape(m.Author.Username))+", this channel is already moderated.")
+		} else {
+			_, _ = s.ChannelMessageSend(m.ChannelID, bold(escape(m.Author.Username))+", this channel is already unmoderated.")
+		}
+		currentCup.reply(s, "", CupReportAll^CupReportSubs)
+		return
 	}
+
+	currentCup.Moderated = moderation
+	if currentCup.Moderated {
+		s.ChannelMessageDelete(m.ChannelID, m.ID)
+		_, _ = s.ChannelMessageSend(currentCup.ChannelID, "This channel is now moderated while the cup is active.\nAny message that is not a bot command will be removed.")
+	} else {
+		s.ChannelMessageDelete(m.ChannelID, m.ID)
+		_, _ = s.ChannelMessageSend(currentCup.ChannelID, "This channel is no longer moderated.")
+	}
+}
+
+func handleHelp(args string, s *discordgo.Session, m *discordgo.MessageCreate) {
+	message := "Supported commands:\n```Note: arguments marked [] are optional, <> are mandatory.\n\n"
+
+	for i, group := range commandGroups {
+		if i > 0 {
+			message += "\n"
+		}
+
+		if len(commandGroups) > 0 {
+			message += group.description + ":\n"
+		}
+
+		maxSyntaxLength := 0
+		for _, cmd := range group.commands {
+			length := cmd.syntaxLength()
+			if length > maxSyntaxLength {
+				maxSyntaxLength = length
+			}
+		}
+
+		for _, cmd := range group.commands {
+			message += fmt.Sprintf("%*s : %s\n", -maxSyntaxLength, cmd.syntax(), cmd.help)
+		}
+	}
+
 	message += "```\n"
 
 	_, _ = s.ChannelMessageSend(m.ChannelID, message)
+}
+
+func handleChat(s *discordgo.Session, m *discordgo.MessageCreate) {
+	currentCup := getCup(m.ChannelID)
+	if currentCup == nil || currentCup.Status == CupStatusInactive || !currentCup.Moderated {
+		return
+	}
+	s.ChannelMessageDelete(m.ChannelID, m.ID)
 }
 
 func decomposeName(index int) (int, int) {
@@ -954,44 +1222,56 @@ func decomposeName(index int) (int, int) {
 var (
 	Attributes = [...]string{
 		"Black", "Grey", "Purple", "Brown", "Blue", "Red", "Green", "Magenta",
-		"Loud", "Thundering", "Screaming", "Flaming", "Furious", "Zen", "Chill",
-		"Laughing", "Giggly", "Unimpressed",
-		"Inappropriate", "Indecent", "Sexy", "Hot", "Flirty", "Cheeky", "Cheesy",
-		"Gangster", "Fugitive", "Outlaw", "Pirate", "Thug", "Kleptomaniac", "Killer", "Lethal",
-		"Rookie", "Trained", "Tryhard", "Stronk",
+		"Silent", "Quiet", "Loud", "Thundering", "Screaming", "Flaming", "Furious", "Zen", "Chill",
+		"Laughing", "Giggly", "Unimpressed", "Serious",
+		"Inappropriate", "Indecent", "Sexy", "Hot", "Flirty", "Cheeky", "Cheesy", "Shameless", "Provocative", "Offensive", "Defensive",
+		"Gangster", "Fugitive", "Outlaw", "Pirate", "Thug", "Kleptomaniac", "Killer", "Lethal", "Gunslinging",
+		"Fresh", "Rookie", "Trained", "Major", "Grandmaster", "Retired", "Potent", "Mighty", "Almighty", "Convincing", "Commanding", "Punchy",
+		"Lucky", "Tryhard", "Stronk",
+		"Expendable",
 		"Millenial", "Centennial",
-		"Sprinting", "Strafing", "Crouching", "Rolling", "Dancing", "Standing", "Rising", "Camping", "Sniping", "Telefragging", "Warping",
-		"Juggling",
-		"Sleepy",
+		"Lunar", "Solar", "Martian",
+		"Aerodynamic",
+		"Sprinting", "Strafing", "Strafejumping", "Circlejumping", "Bunnyhopping", "Crouching", "Rising", "Standing", "Camping", "Twitchy", "Sniping", "Telefragging",
+		"Rolling", "Dancing", "Breakdancing", "Tap-dancing",
+		"Snorkeling", "Snowbording", "Cycling", "Rollerblading", "Paragliding", "Skydiving",
+		"Drifting", "Warping", "Laggy", "Smooth", "Stiff",
+		"Cryogenic", "Mutating", "Undead", "Ghostly", "Possessed", "Supernatural",
+		"Juggling", "Ambidextrous", "Left-handed",
+		"Snoring", "Sleepy", "Energetic", "Hyperactive", "Dynamic",
 		"Tilted", "Excentric", "Irrational", "Claustrophobic",
 		"Undercover", "Stealthy", "Hidden", "Obvious", "Deceptive",
-		"Total",
-		"Chocolate",
+		"Total", "Definitive",
+		"Chocolate", "Vanilla",
 		"Plastic", "Metal", "Rubber", "Golden", "Paper",
-		"Original", "Creative", "Articulate", "Elegant", "Polite", "Classy",
+		"Random", "Synchronized", "Synergetic", "Coordinated",
+		"Radical", "Unconventional", "Standard", "Original", "Mutated", "Creative", "Articulate", "Elegant", "Gentle", "Polite", "Classy",
 		"Retro", "Old-school", "Next-gen", "Revolutionary",
 		"Punk", "Disco", "Electronic", "Analog",
-		"Nerdy", "Trendy", "Sporty", "Chic",
-		"Famous", "Incognito",
+		"Nerdy", "Hipster", "Trendy", "Sporty", "Chic", "Photogenic",
+		"Mythical", "Famous", "Incognito",
 		"Slim", "Toned", "Muscular", "Round", "Heavy", "Well-fed", "Hungry", "Vegan",
 		"Bearded", "Hairy", "Furry", "Fuzzy",
-		"Fearless", "Fierce", "Heroic", "Unstoppable", "Lucky",
-		"Polar", "Siberian", "Tropical", "Brazilian",
+		"Beastly", "Barbarian", "Vicious", "Fierce", "Devastating", "Dominating", "Conquering", "Controlling", "Agressive", "Retaliating",
+		"Fearless", "Heroic", "Glorious", "Victorious", "Triumphant", "Relentless", "Unstoppable",
+		"Arctic", "Polar", "Siberian", "Tropical", "Brazilian",
 	}
 
 	Nouns = [...]string{
 		"Alligators", "Crocs",
-		"Armadillos", "Beavers",
+		"Armadillos", "Beavers", "Squirrels", "Raccoons",
 		"Bears", "Pandas",
-		"Bunnies", "Hamsters", "Kittens", "Puppies", "Pitbulls",
+		"Hamsters", "Kittens", "Bunnies", "Puppies", "Pitbulls", "Bulldogs", "Dalmatians", "Greyhounds", "Huskies",
 		"Turtles",
 		"Giraffes", "Gazelles",
-		"Dolphins", "Sharks", "Piranhas", "Tunas", "Trouts",
+		"Sharks", "Piranhas", "Tuna", "Salmons", "Trouts", "Barracudas", "Stingrays",
+		"Dolphins", "Sealions",
 		"Hornets",
+		"Pythons", "Vipers", "Cobras", "Anacondas",
 		"Hippos", "Rhinos",
 		"Tigers", "Cheetas", "Hyenas", "Dingos",
-		"Baboons",
-		"Hawks", "Eagles", "Ravens", "Pigeons", "Duckies", "Pterodactyls", "Dragons",
+		"Baboons", "Bonobos",
+		"Dragons", "Pterodactyls", "Eagles", "Hawks", "Ravens", "Seagulls", "Flamingos", "Pigeons", "Roosters", "Duckies",
 		"Ponies", "Zebras", "Stallions",
 		"Zombies", "Unicorns", "Mermaids", "Trolls",
 	}
@@ -1007,7 +1287,70 @@ var (
 	BotID string
 )
 
+// Variables used for state serialization
+var (
+	DataDir        string
+	FilePermission = os.FileMode(0640)
+)
+
 ////////////////////////////////////////////////////////////////
+
+func resumeState() error {
+	if len(DataDir) <= 0 {
+		return os.ErrNotExist
+	}
+
+	fileList, err := ioutil.ReadDir(DataDir)
+	if err != nil {
+		return err
+	}
+
+	for _, file := range fileList {
+		if file.IsDir() {
+			continue
+		}
+		name := file.Name()
+		path := filepath.Join(DataDir, name)
+		contents, err := ioutil.ReadFile(path)
+		if err != nil {
+			fmt.Println("Error reading cup", name, ":", err)
+			continue
+		}
+
+		currentCup := new(Cup)
+		err = json.Unmarshal(contents, currentCup)
+		if err != nil {
+			fmt.Println("Error parsing cup", name, ":", err)
+			continue
+		}
+
+		if currentCup.ChannelID != name {
+			fmt.Printf("File name/channel ID mismatch: '%s' vs '%s', ignoring...\n", name, currentCup.ChannelID)
+			continue
+		}
+
+		currentCup.updateTeamNameCache()
+		activeCups[currentCup.ChannelID] = currentCup
+
+		os.Remove(path)
+		fmt.Println("Loaded cup", name)
+	}
+
+	return nil
+}
+
+func suspendState() error {
+	for index, cup := range activeCups {
+		err := cup.save()
+		if err != nil {
+			fmt.Println("Error serializing cup", index, ":", err)
+			continue
+		}
+		fmt.Println("Saved cup", index)
+	}
+
+	return nil
+}
 
 func init() {
 	flag.StringVar(&Token, "t", "", "Bot Token")
@@ -1018,45 +1361,82 @@ func init() {
 	// Commands are initialized here to avoid initialization loop.
 
 	commandHelp = command{
-		"help",
-		"",
-		handleHelp,
-		"Show this list",
+		group:   &draftCommands,
+		name:    "help",
+		args:    "",
+		execute: handleHelp,
+		help:    "Show this list",
 	}
 	commandStart = command{
-		"start", " [message]",
-		handleStart,
-		"Start a new cup, with an optional description",
+		group:   &draftCommands,
+		name:    "start",
+		args:    " [message]",
+		execute: handleStart,
+		help:    "Start a new cup, with an optional description",
 	}
 	commandAbort = command{
-		"abort", "",
-		handleAbort,
-		"Abort current cup",
+		group:   &draftCommands,
+		name:    "abort",
+		args:    "",
+		execute: handleAbort,
+		help:    "Abort current cup",
 	}
 	commandAdd = command{
-		"add", "",
-		handleAdd,
-		"Sign up to play in the cup",
+		group:   &draftCommands,
+		name:    "add",
+		args:    "",
+		execute: handleAdd,
+		help:    "Sign up to play in the cup",
 	}
 	commandRemove = command{
-		"remove", " [number]",
-		handleRemove,
-		"Remove yourself from the cup (or another player, if admin)",
+		group:   &draftCommands,
+		name:    "remove",
+		args:    " [number]",
+		execute: handleRemove,
+		help:    "Remove yourself from the cup (or another player, if admin)",
 	}
 	commandWho = command{
-		"who", "",
-		handleWho,
-		"Show list of players in cup",
+		group:   &draftCommands,
+		name:    "who",
+		args:    "",
+		execute: handleWho,
+		help:    "Show list of players in cup",
+	}
+	commandModerate = command{
+		group:   &draftCommands,
+		name:    "moderate",
+		args:    " <on|off>",
+		execute: handleModerate,
+		help:    "Enables or disables channel moderation when the cup is active",
 	}
 	commandClose = command{
-		"close", " [number]",
-		handleClose,
-		"Close cup for sign-ups, optionally keeping only [number] players",
+		group:   &draftCommands,
+		name:    "close",
+		args:    " [number]",
+		execute: handleClose,
+		help:    "Close cup for sign-ups, optionally keeping only [number] players",
 	}
 	commandPick = command{
-		"pick", " <number>",
-		handlePick,
-		"Pick the player with the given number",
+		group:   &draftCommands,
+		name:    "pick",
+		args:    " <number>",
+		execute: handlePick,
+		help:    "Pick the player with the given number",
+	}
+	commandPromote = command{
+		group:   &draftCommands,
+		name:    "promote",
+		args:    "",
+		execute: handlePromote,
+		help:    "Promote the cup",
+	}
+
+	exe, err := os.Executable()
+	if err == nil {
+		DataDir = filepath.Join(filepath.Dir(exe), "channels")
+		fmt.Println("Data folder: ", DataDir)
+
+		resumeState()
 	}
 }
 
@@ -1090,7 +1470,7 @@ func main() {
 	defer dg.Close()
 
 	// Update bot status, giving users a starting point.
-	err = dg.UpdateStatus(0, "type "+commandPrefix)
+	err = dg.UpdateStatus(0, "type "+draftCommands.prefix)
 	if err != nil {
 		fmt.Println("error updating bot status,", err)
 	}
@@ -1111,20 +1491,24 @@ func main() {
 
 	fmt.Println("Bot stopped.")
 
+	suspendState()
+
 	return
 }
 
 ////////////////////////////////////////////////////////////////
 
 type devHacks struct {
-	fillUpOnClose               bool
-	disableAlreadySignedUpCheck bool
+	fillUpOnClose   bool
+	allowDuplicates bool
+	saveOnWho       bool
 }
 
-// Developer hacks, for easier testing
+// Developer hacks, for easier testing. DO NOT leave any enabled!
 var (
 	activeHacks = devHacks{
-		fillUpOnClose:               false,
-		disableAlreadySignedUpCheck: false,
+		fillUpOnClose:   false,
+		allowDuplicates: false,
+		saveOnWho:       false,
 	}
 )
