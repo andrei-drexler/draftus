@@ -412,7 +412,7 @@ func (currentCup *Cup) addPlayerToTeam(playerIndex int, teamIndex int) (string, 
 
 	currentCup.PickedPlayers++
 
-	message := bold(player.Name) + " joined team " + strconv.Itoa(teamIndex+1) + ", " + bold(currentCup.Teams[teamIndex].Name)
+	message := mention(player) + " joined team " + strconv.Itoa(teamIndex+1) + ", " + bold(currentCup.Teams[teamIndex].Name)
 	if team.First == playerIndex {
 		message += " (as captain)"
 	}
@@ -463,7 +463,7 @@ func (currentCup *Cup) report(selector int) string {
 			if currentCup.PickedPlayers != active && currentCup.PickedPlayers != 0 {
 				message += fmt.Sprintf("%d teams, with %s picked out of %d:\n```\n", len(currentCup.Teams), numbered(currentCup.PickedPlayers, "player"), active)
 			} else {
-				message += fmt.Sprintf("%d teams, with %d players:\n```\n", len(currentCup.Teams), active)
+				message += fmt.Sprintf("%d competing teams:\n```\n", len(currentCup.Teams))
 			}
 			for i := range currentCup.Teams {
 				lineup, _ := currentCup.getLineup(i)
@@ -509,9 +509,9 @@ func (currentCup *Cup) report(selector int) string {
 				teamDescription := "team " + strconv.Itoa(pickup.Team+1) + ", " + bold(teamName)
 
 				if pickup.Player == 0 {
-					message += bold(who.Name) + ", pick a captain for " + teamDescription + ", by typing " + bold(commandPick.syntax()) + "\n"
+					message += mention(who) + ", pick a captain for " + teamDescription + ", by typing " + bold(commandPick.syntax()) + "\n"
 				} else {
-					message += bold(who.Name) + ", pick the " + nth(pickup.Player+1) + " player for " + teamDescription + ", by typing " + bold(commandPick.syntax()) + "\n"
+					message += mention(who) + ", pick the " + nth(pickup.Player+1) + " player for " + teamDescription + ", by typing " + bold(commandPick.syntax()) + "\n"
 				}
 			} else {
 				message += "Good luck and have fun!\n"
@@ -995,11 +995,7 @@ func handleClose(args string, s *discordgo.Session, m *discordgo.MessageCreate) 
 		}
 		currentCup.chooseTeamNames()
 
-		message := fmt.Sprintf("Cup registration now closed. The %d competing teams are:\n```\n", numTeams)
-		for i := 0; i < numTeams; i++ {
-			message += fmt.Sprintf("%d. %s\n", i+1, currentCup.Teams[i].Name)
-		}
-		message += "```\n"
+		message := fmt.Sprintf("Cup registration is now closed.\n\n")
 		currentCup.deleteAndReply(s, m, message, CupReportAll)
 
 	default:
