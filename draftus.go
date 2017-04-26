@@ -1,19 +1,19 @@
 package main
 
 import (
+	"encoding/json"
 	"flag"
 	"fmt"
-	"strconv"
-	"strings"
+	"io/ioutil"
 	"math/rand"
 	"os"
 	"os/signal"
-	"syscall"
-	"io/ioutil"
 	"path/filepath"
-	"encoding/json"
 	"sort"
+	"strconv"
+	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/bwmarrin/discordgo"
@@ -803,7 +803,7 @@ func handleAdd(args string, s *discordgo.Session, m *discordgo.MessageCreate) {
 	case CupStatusPickup:
 	case CupStatusSignup:
 		before := currentCup.findPlayer(m.Author.ID)
-		if before != -1 && !activeHacks.allowDuplicates {
+		if before != -1 && !devHacks.allowDuplicates {
 			message := bold(escape(m.Author.Username)) + ", you're already registered for this cup (" + nth(before+1) + " of " + strconv.Itoa(len(currentCup.Players)) + ")."
 			_, _ = s.ChannelMessageSend(m.ChannelID, message)
 			currentCup.reply(s, "", CupReportAll)
@@ -895,11 +895,11 @@ func handleClose(args string, s *discordgo.Session, m *discordgo.MessageCreate) 
 	switch currentCup.Status {
 	case CupStatusSignup:
 		// Hack to allow testing
-		if activeHacks.fillUpOnClose {
+		if devHacks.fillUpOnClose > 0 {
 			if len(currentCup.Players) == 0 {
 				currentCup.Players = append(currentCup.Players, currentCup.Manager)
 			}
-			for i := len(currentCup.Players); i < 19; i++ {
+			for i := len(currentCup.Players); i < devHacks.fillUpOnClose; i++ {
 				currentCup.Players = append(currentCup.Players, currentCup.Players[0])
 			}
 		}
@@ -1116,7 +1116,7 @@ func handleWho(args string, s *discordgo.Session, m *discordgo.MessageCreate) {
 	}
 	currentCup.deleteAndReply(s, m, "", CupReportAll)
 
-	if activeHacks.saveOnWho {
+	if devHacks.saveOnWho {
 		currentCup.save()
 	}
 }
@@ -1285,6 +1285,13 @@ var (
 var (
 	Token string
 	BotID string
+
+	// Developer hacks, for easier testing
+	devHacks struct {
+		fillUpOnClose   int
+		allowDuplicates bool
+		saveOnWho       bool
+	}
 )
 
 // Variables used for state serialization
@@ -1354,6 +1361,9 @@ func suspendState() error {
 
 func init() {
 	flag.StringVar(&Token, "t", "", "Bot Token")
+	flag.BoolVar(&devHacks.allowDuplicates, "dev-allowdup", false, "Allow multiple sign up")
+	flag.BoolVar(&devHacks.saveOnWho, "dev-saveonwho", false, "Save cup on who command")
+	flag.IntVar(&devHacks.fillUpOnClose, "dev-autofill", 0, "Number of slots to fill up on close")
 	flag.Parse()
 
 	rand.Seed(time.Now().UTC().UnixNano())
@@ -1495,20 +1505,3 @@ func main() {
 
 	return
 }
-
-////////////////////////////////////////////////////////////////
-
-type devHacks struct {
-	fillUpOnClose   bool
-	allowDuplicates bool
-	saveOnWho       bool
-}
-
-// Developer hacks, for easier testing. DO NOT leave any enabled!
-var (
-	activeHacks = devHacks{
-		fillUpOnClose:   false,
-		allowDuplicates: false,
-		saveOnWho:       false,
-	}
-)
