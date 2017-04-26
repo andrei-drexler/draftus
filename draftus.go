@@ -558,11 +558,11 @@ func (currentCup *Cup) unpinAll(s *discordgo.Session) {
 }
 
 func (currentCup *Cup) save() error {
-	if len(DataDir) <= 0 {
+	if len(ChannelDataDir) <= 0 {
 		return os.ErrInvalid
 	}
 
-	err := os.MkdirAll(DataDir, FilePermission)
+	err := os.MkdirAll(ChannelDataDir, SaveFilePermission)
 	if err != nil {
 		return err
 	}
@@ -572,8 +572,8 @@ func (currentCup *Cup) save() error {
 		return err
 	}
 
-	path := filepath.Join(DataDir, currentCup.ChannelID)
-	err = ioutil.WriteFile(path, contents, FilePermission)
+	path := filepath.Join(ChannelDataDir, currentCup.ChannelID)
+	err = ioutil.WriteFile(path, contents, SaveFilePermission)
 	if err != nil {
 		return err
 	}
@@ -702,9 +702,18 @@ func parseToken(cmd string) (string, string) {
 
 ////////////////////////////////////////////////////////////////
 
-// This function will be called (due to AddHandler above) every time a new
-// message is created on any channel that the autenticated bot has access to.
-func messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
+// Update bot status, giving users a starting point.
+func updateBotStatus(s *discordgo.Session) error {
+	err := s.UpdateStatus(0, "type "+draftCommands.prefix)
+	if err != nil {
+		fmt.Println("error updating bot status,", err)
+	}
+	return err
+}
+
+// This function will be called every time a new message is created
+// on any channel that the autenticated bot has access to.
+func onMessageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 	// Ignore all messages created by the bot itself
 	if m.Author.ID == BotID {
 		return
@@ -749,15 +758,6 @@ func messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 	handleChat(s, m)
 }
 
-func updateBotStatus(s *discordgo.Session) error {
-	// Update bot status, giving users a starting point.
-	err := s.UpdateStatus(0, "type "+draftCommands.prefix)
-	if err != nil {
-		fmt.Println("error updating bot status,", err)
-	}
-	return err
-}
-
 func onReady(s *discordgo.Session, m *discordgo.Ready) {
 	updateBotStatus(s)
 }
@@ -766,10 +766,7 @@ func onResumed(s *discordgo.Session, m *discordgo.Resumed) {
 	updateBotStatus(s)
 }
 
-var (
-	index = 1
-)
-
+// Handle draft cup start command
 func handleStart(args string, s *discordgo.Session, m *discordgo.MessageCreate) {
 	currentCup := getCup(m.ChannelID)
 	if currentCup != nil {
@@ -817,6 +814,7 @@ func handleStart(args string, s *discordgo.Session, m *discordgo.MessageCreate) 
 	}
 }
 
+// Handle draft cup abort command
 func handleAbort(args string, s *discordgo.Session, m *discordgo.MessageCreate) {
 	currentCup := getCup(m.ChannelID)
 	if currentCup == nil {
@@ -833,6 +831,7 @@ func handleAbort(args string, s *discordgo.Session, m *discordgo.MessageCreate) 
 	deleteCup(m.ChannelID)
 }
 
+// Handle draft cup sign up
 func handleAdd(args string, s *discordgo.Session, m *discordgo.MessageCreate) {
 	currentCup := getCup(m.ChannelID)
 	if currentCup == nil || currentCup.Status == CupStatusInactive {
@@ -860,6 +859,7 @@ func handleAdd(args string, s *discordgo.Session, m *discordgo.MessageCreate) {
 	}
 }
 
+// Handle draft cup withdrawals
 func handleRemove(args string, s *discordgo.Session, m *discordgo.MessageCreate) {
 	currentCup := getCup(m.ChannelID)
 	if currentCup == nil {
@@ -922,6 +922,7 @@ func handleRemove(args string, s *discordgo.Session, m *discordgo.MessageCreate)
 	}
 }
 
+// Handle draft cup registration close
 func handleClose(args string, s *discordgo.Session, m *discordgo.MessageCreate) {
 	currentCup := getCup(m.ChannelID)
 	if currentCup == nil {
@@ -1006,6 +1007,7 @@ func handleClose(args string, s *discordgo.Session, m *discordgo.MessageCreate) 
 	}
 }
 
+// Handle draft cup player picking
 func handlePick(args string, s *discordgo.Session, m *discordgo.MessageCreate) {
 	currentCup := getCup(m.ChannelID)
 	if currentCup == nil {
@@ -1118,6 +1120,7 @@ func handlePick(args string, s *discordgo.Session, m *discordgo.MessageCreate) {
 	}
 }
 
+// Handle draft cup promotion
 func handlePromote(args string, s *discordgo.Session, m *discordgo.MessageCreate) {
 	currentCup := getCup(m.ChannelID)
 	if currentCup == nil || currentCup.Status == CupStatusInactive {
@@ -1149,6 +1152,7 @@ func handlePromote(args string, s *discordgo.Session, m *discordgo.MessageCreate
 	currentCup.reply(s, "", CupReportAll)
 }
 
+// Handle draft cup player list info command
 func handleWho(args string, s *discordgo.Session, m *discordgo.MessageCreate) {
 	currentCup := getCup(m.ChannelID)
 	if currentCup == nil || currentCup.Status == CupStatusInactive {
@@ -1162,6 +1166,7 @@ func handleWho(args string, s *discordgo.Session, m *discordgo.MessageCreate) {
 	}
 }
 
+// Handle draft cup moderation toggle command
 func handleModerate(args string, s *discordgo.Session, m *discordgo.MessageCreate) {
 	currentCup := getCup(m.ChannelID)
 	if currentCup == nil || currentCup.Status == CupStatusInactive {
@@ -1215,6 +1220,7 @@ func handleModerate(args string, s *discordgo.Session, m *discordgo.MessageCreat
 	}
 }
 
+// Handle draft cup help command
 func handleHelp(args string, s *discordgo.Session, m *discordgo.MessageCreate) {
 	message := "Supported commands:\n```Note: arguments marked [] are optional, <> are mandatory.\n\n"
 
@@ -1245,6 +1251,7 @@ func handleHelp(args string, s *discordgo.Session, m *discordgo.MessageCreate) {
 	_, _ = s.ChannelMessageSend(m.ChannelID, message)
 }
 
+// Handle chat messages that don't belong to any command group
 func handleChat(s *discordgo.Session, m *discordgo.MessageCreate) {
 	currentCup := getCup(m.ChannelID)
 	if currentCup == nil || currentCup.Status == CupStatusInactive || !currentCup.Moderated {
@@ -1252,6 +1259,10 @@ func handleChat(s *discordgo.Session, m *discordgo.MessageCreate) {
 	}
 	s.ChannelMessageDelete(m.ChannelID, m.ID)
 }
+
+////////////////////////////////////////////////////////////////
+// Random team name support
+////////////////////////////////////////////////////////////////
 
 func decomposeName(index int) (int, int) {
 	attribute := index % len(Attributes)
@@ -1340,20 +1351,25 @@ var (
 	}
 )
 
-// Variables used for state serialization
-var (
-	DataDir        string
-	FilePermission = os.FileMode(0640)
-)
-
 ////////////////////////////////////////////////////////////////
 
+// Permission to be used when saving files
+const (
+	SaveFilePermission = os.FileMode(0640)
+)
+
+// Folder where channel-specific (cup) files are saved
+var (
+	ChannelDataDir string
+)
+
+// Load all cups from disk (and remove the corresponding files)
 func resumeState() error {
-	if len(DataDir) <= 0 {
+	if len(ChannelDataDir) <= 0 {
 		return os.ErrNotExist
 	}
 
-	fileList, err := ioutil.ReadDir(DataDir)
+	fileList, err := ioutil.ReadDir(ChannelDataDir)
 	if err != nil {
 		return err
 	}
@@ -1363,7 +1379,7 @@ func resumeState() error {
 			continue
 		}
 		name := file.Name()
-		path := filepath.Join(DataDir, name)
+		path := filepath.Join(ChannelDataDir, name)
 		contents, err := ioutil.ReadFile(path)
 		if err != nil {
 			fmt.Println("Error reading cup", name, ":", err)
@@ -1392,6 +1408,7 @@ func resumeState() error {
 	return nil
 }
 
+// Save all active cups to disk
 func suspendState() error {
 	for index, cup := range activeCups {
 		err := cup.save()
@@ -1405,6 +1422,7 @@ func suspendState() error {
 	return nil
 }
 
+// Application initialization
 func init() {
 	flag.StringVar(&Token, "t", "", "Bot Token")
 	flag.BoolVar(&devHacks.allowDuplicates, "dev-allowdup", false, "Allow multiple sign up")
@@ -1489,13 +1507,14 @@ func init() {
 
 	exe, err := os.Executable()
 	if err == nil {
-		DataDir = filepath.Join(filepath.Dir(exe), "channels")
-		fmt.Println("Data folder: ", DataDir)
+		ChannelDataDir = filepath.Join(filepath.Dir(exe), "channels")
+		fmt.Println("Data folder: ", ChannelDataDir)
 
 		resumeState()
 	}
 }
 
+// Application main function
 func main() {
 	// Create a new Discord session using the provided bot token.
 	var err error
@@ -1516,7 +1535,7 @@ func main() {
 	BotID = u.ID
 
 	// Register event callbacks.
-	Session.AddHandler(messageCreate)
+	Session.AddHandler(onMessageCreate)
 	Session.AddHandler(onReady)
 	Session.AddHandler(onResumed)
 
