@@ -343,12 +343,7 @@ func (currentCup *Cup) updateTeamNameCache() {
 			currentCup.longestTeamName = length
 		}
 
-		indexDigits := 1
-		for j := i; j >= 10; j /= 10 {
-			indexDigits++
-		}
-
-		length += indexDigits + 2 // number, dot, space
+		length += digits10(i) + 2 // number, dot, space
 		if length > currentCup.longestTeamDescription {
 			currentCup.longestTeamDescription = length
 		}
@@ -440,6 +435,8 @@ func (currentCup *Cup) getLineup(index int) (string, error) {
 func (currentCup *Cup) report(selector int) string {
 	message := ""
 
+	playerDigits := digits10(len(currentCup.Players))
+
 	switch currentCup.Status {
 	case CupStatusSignup:
 		if (selector & CupReportPlayers) != 0 {
@@ -448,7 +445,7 @@ func (currentCup *Cup) report(selector int) string {
 			} else {
 				message += numbered(len(currentCup.Players), "player") + " signed up so far:\n```"
 				for i := range currentCup.Players {
-					message += strconv.Itoa(i+1) + ". " + currentCup.Players[i].Name + "\n"
+					message += rightpad(strconv.Itoa(i+1)+". ", playerDigits+2) + currentCup.Players[i].Name + "\n"
 				}
 				message += "```\n"
 			}
@@ -468,7 +465,12 @@ func (currentCup *Cup) report(selector int) string {
 			for i := range currentCup.Teams {
 				lineup, _ := currentCup.getLineup(i)
 				teamDescription := strconv.Itoa(i+1) + ". " + currentCup.Teams[i].Name
-				message += fmt.Sprintf("%*s : %s\n", -currentCup.longestTeamDescription, teamDescription, lineup)
+				// omit colons if all teams are empty
+				if currentCup.PickedPlayers > 0 {
+					message += fmt.Sprintf("%*s : %s\n", -currentCup.longestTeamDescription, teamDescription, lineup)
+				} else {
+					message += teamDescription + "\n"
+				}
 			}
 			message += "```\n"
 		}
@@ -482,7 +484,7 @@ func (currentCup *Cup) report(selector int) string {
 					if player.Team != -1 {
 						continue
 					}
-					message += strconv.Itoa(i+1) + ". " + player.Name + "\n"
+					message += rightpad(strconv.Itoa(i+1)+". ", playerDigits+2) + player.Name + "\n"
 				}
 				message += "\n```\n"
 			}
@@ -582,6 +584,21 @@ func (currentCup *Cup) save() error {
 }
 
 ////////////////////////////////////////////////////////////////
+
+func digits10(number int) int {
+	count := 1
+	for ; number >= 10; number /= 10 {
+		count++
+	}
+	return count
+}
+
+func rightpad(text string, total int) string {
+	if len(text) >= total {
+		return text
+	}
+	return text + strings.Repeat(" ", total-len(text))
+}
 
 func numbered(count int, singular string) string {
 	result := strconv.Itoa(count) + " " + singular
