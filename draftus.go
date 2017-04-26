@@ -627,6 +627,10 @@ func mention(who *Player) string {
 	return "<@" + who.ID + ">"
 }
 
+func display(who *Player) string {
+	return bold(escape(who.Name))
+}
+
 ////////////////////////////////////////////////////////////////
 
 // Common longer durations
@@ -774,7 +778,7 @@ func handleStart(args string, s *discordgo.Session, m *discordgo.MessageCreate) 
 		if currentCup.Manager.ID == m.Author.ID {
 			message += "you"
 		} else {
-			message += bold(currentCup.Manager.Name)
+			message += display(&currentCup.Manager)
 		}
 		message += " already started the cup."
 		_, _ = s.ChannelMessageSend(m.ChannelID, message)
@@ -823,7 +827,7 @@ func handleAbort(args string, s *discordgo.Session, m *discordgo.MessageCreate) 
 	}
 
 	if !currentCup.isSuperUser(m.Author.ID) {
-		_, _ = s.ChannelMessageSend(m.ChannelID, "Only "+bold(currentCup.Manager.Name)+", the cup manager, or an admin can abort this cup.")
+		_, _ = s.ChannelMessageSend(m.ChannelID, "Only "+display(&currentCup.Manager)+", the cup manager, or an admin can abort this cup.")
 		return
 	}
 
@@ -879,7 +883,7 @@ func handleRemove(args string, s *discordgo.Session, m *discordgo.MessageCreate)
 		token, args = parseToken(args)
 		if len(token) > 0 {
 			if !currentCup.isSuperUser(m.Author.ID) {
-				message := "Only the cup manager, " + bold(currentCup.Manager.Name) + ", or an admin can remove other players.\n"
+				message := "Only the cup manager, " + display(&currentCup.Manager) + ", or an admin can remove other players.\n"
 				if currentCup.findPlayer(m.Author.ID) != -1 {
 					message += "You can remove yourself by typing " + bold(commandRemove.syntaxNoArgs())
 				}
@@ -930,7 +934,7 @@ func handleClose(args string, s *discordgo.Session, m *discordgo.MessageCreate) 
 		return
 	}
 	if !currentCup.isSuperUser(m.Author.ID) {
-		_, _ = s.ChannelMessageSend(m.ChannelID, "Only "+bold(currentCup.Manager.Name)+", the cup manager, or an admin can close the cup.")
+		_, _ = s.ChannelMessageSend(m.ChannelID, "Only "+display(&currentCup.Manager)+", the cup manager, or an admin can close the cup.")
 		return
 	}
 
@@ -1030,7 +1034,7 @@ func handlePick(args string, s *discordgo.Session, m *discordgo.MessageCreate) {
 		}
 
 		if who.ID != m.Author.ID {
-			_, _ = s.ChannelMessageSend(m.ChannelID, bold(escape(m.Author.Username))+", it's not your turn to pick, but "+bold(who.Name)+"'s.\n")
+			_, _ = s.ChannelMessageSend(m.ChannelID, bold(escape(m.Author.Username))+", it's not your turn to pick, but "+display(who)+"'s.\n")
 			currentCup.reply(s, "", CupReportAll^CupReportSubs)
 			return
 		}
@@ -1058,7 +1062,7 @@ func handlePick(args string, s *discordgo.Session, m *discordgo.MessageCreate) {
 
 		if index >= numActive && index < len(currentCup.Players) {
 			sub := &currentCup.Players[index]
-			message := bold(escape(m.Author.Username)) + ", you can't pick " + bold(sub.Name) + ", he's only registered as a substitute."
+			message := bold(escape(m.Author.Username)) + ", you can't pick " + display(sub) + ", he's only registered as a substitute."
 			_, _ = s.ChannelMessageSend(m.ChannelID, message)
 			currentCup.reply(s, "", CupReportAll^CupReportSubs)
 			return
@@ -1067,7 +1071,7 @@ func handlePick(args string, s *discordgo.Session, m *discordgo.MessageCreate) {
 		selected := &currentCup.Players[index]
 		if selected.Team != -1 {
 			team := currentCup.Teams[selected.Team]
-			message := bold(selected.Name) + " already on team " + strconv.Itoa(selected.Team+1) + ", " + bold(team.Name)
+			message := display(selected) + " already on team " + strconv.Itoa(selected.Team+1) + ", " + bold(team.Name)
 			_, _ = s.ChannelMessageSend(m.ChannelID, message)
 			currentCup.reply(s, "", CupReportAll^CupReportSubs)
 			return
@@ -1092,7 +1096,7 @@ func handlePick(args string, s *discordgo.Session, m *discordgo.MessageCreate) {
 			currentCup.unpinAll(s)
 
 			text = "Teams are now complete and the games can begin!\n" +
-				bold(currentCup.Manager.Name) + " will take things from here, setting up matches and tracking scores.\n\n" +
+				display(&currentCup.Manager) + " will take things from here, setting up matches and tracking scores.\n\n" +
 				currentCup.report(CupReportTeams|CupReportSubs|CupReportNextAction) + "@everyone"
 
 			lastMessage, err := s.ChannelMessageSend(currentCup.ChannelID, text)
@@ -1140,7 +1144,7 @@ func handlePromote(args string, s *discordgo.Session, m *discordgo.MessageCreate
 
 	currentCup.NextPromoteTime = now.Add(MinimumPromotionInterval)
 
-	text := "Hey, @everyone!\n\nDon't forget that registration is now open for a new draft cup, managed by " + bold(escape(currentCup.Manager.Name)) + ".\n"
+	text := "Hey, @everyone!\n\nDon't forget that registration is now open for a new draft cup, managed by " + display(&currentCup.Manager) + ".\n"
 	if len(currentCup.Description) > 0 {
 		text += "\n" + currentCup.Description
 	}
@@ -1172,7 +1176,7 @@ func handleModerate(args string, s *discordgo.Session, m *discordgo.MessageCreat
 	}
 
 	if m.Author.ID != currentCup.Manager.ID {
-		_, _ = s.ChannelMessageSend(m.ChannelID, "Only "+bold(currentCup.Manager.Name)+", the cup manager, can enable or disable moderation.")
+		_, _ = s.ChannelMessageSend(m.ChannelID, "Only "+display(&currentCup.Manager)+", the cup manager, can enable or disable moderation.")
 		currentCup.reply(s, "", CupReportAll^CupReportSubs)
 		return
 	}
