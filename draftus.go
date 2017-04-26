@@ -242,8 +242,47 @@ func (currentCup *Cup) nextAvailablePlayer() int {
 	return currentCup.findAvailablePlayer(0)
 }
 
-func (currentCup *Cup) isSuperUser(id string) bool {
+func (currentCup *Cup) isManager(id string) bool {
 	return currentCup.Status != CupStatusInactive && currentCup.Manager.ID == id
+}
+
+func (currentCup *Cup) isSuperUser(id string) bool {
+	// Check cup manager first
+	if currentCup.isManager(id) {
+		return true
+	}
+
+	// If not the manager, check for an appropriate role
+
+	member, err := Session.GuildMember(currentCup.GuildID, id)
+	if err != nil {
+		fmt.Println("Error retrieving guild member:", err)
+		return false
+	}
+
+	var adminRoles = [...]string{
+		"DraftusAdmin",
+		"Admins",
+		"Admin",
+		"Supervisors",
+		"Supervisor",
+		"DraftCupOrganizer",
+	}
+
+	for _, roleID := range member.Roles {
+		role, err := Session.State.Role(currentCup.GuildID, roleID)
+		if err != nil {
+			fmt.Println("Error retrieving role info:", err)
+			continue
+		}
+		for _, adminRoleName := range adminRoles {
+			if strings.EqualFold(role.Name, adminRoleName) {
+				return true
+			}
+		}
+	}
+
+	return false
 }
 
 func (currentCup *Cup) targetPlayerCount() int {
@@ -740,21 +779,6 @@ func handleStart(args string, s *discordgo.Session, m *discordgo.MessageCreate) 
 		currentCup.GuildID = channel.GuildID
 	}
 
-	// Just a note to self on retrieving the list of roles for a given user
-	if false {
-		member, err := s.GuildMember(channel.GuildID, m.Author.ID)
-		if err != nil {
-			return
-		}
-
-		for _, roleID := range member.Roles {
-			role, err := s.State.Role(channel.GuildID, roleID)
-			if err == nil {
-				fmt.Printf("%s: %s\n", m.Author.Username, role.Name)
-			}
-		}
-	}
-
 	text := "Hey, @everyone!\n\nRegistration is now open for a new draft cup, managed by " + bold(escape(m.Author.Username)) + ".\n\n"
 	if len(args) > 0 {
 		text += args + "\n\n"
@@ -784,11 +808,11 @@ func handleAbort(args string, s *discordgo.Session, m *discordgo.MessageCreate) 
 	}
 
 	if !currentCup.isSuperUser(m.Author.ID) {
-		_, _ = s.ChannelMessageSend(m.ChannelID, "Only "+bold(currentCup.Manager.Name)+", the cup manager, can abort it.")
+		_, _ = s.ChannelMessageSend(m.ChannelID, "Only "+bold(currentCup.Manager.Name)+", the cup manager, or an admin can abort this cup.")
 		return
 	}
 
-	_, _ = s.ChannelMessageSend(m.ChannelID, "Cup aborted. You can start a new one with "+bold(commandStart.syntax()))
+	_, _ = s.ChannelMessageSend(m.ChannelID, "Cup aborted by "+bold(escape(m.Author.Username))+". You can start a new one with "+bold(commandStart.syntax()))
 	deleteCup(m.ChannelID)
 }
 
@@ -838,7 +862,7 @@ func handleRemove(args string, s *discordgo.Session, m *discordgo.MessageCreate)
 		token, args = parseToken(args)
 		if len(token) > 0 {
 			if !currentCup.isSuperUser(m.Author.ID) {
-				message := "Only the cup manager, " + bold(currentCup.Manager.Name) + ", can remove other players.\n"
+				message := "Only the cup manager, " + bold(currentCup.Manager.Name) + ", or an admin can remove other players.\n"
 				if currentCup.findPlayer(m.Author.ID) != -1 {
 					message += "You can remove yourself by typing " + bold(commandRemove.syntaxNoArgs())
 				}
@@ -888,7 +912,7 @@ func handleClose(args string, s *discordgo.Session, m *discordgo.MessageCreate) 
 		return
 	}
 	if !currentCup.isSuperUser(m.Author.ID) {
-		_, _ = s.ChannelMessageSend(m.ChannelID, "Only "+bold(currentCup.Manager.Name)+", the cup manager, can close it.")
+		_, _ = s.ChannelMessageSend(m.ChannelID, "Only "+bold(currentCup.Manager.Name)+", the cup manager, or an admin can close the cup.")
 		return
 	}
 
@@ -1281,6 +1305,11 @@ var (
 
 ////////////////////////////////////////////////////////////////
 
+// Discord session
+var (
+	Session *discordgo.Session
+)
+
 // Variables used for command line parameters
 var (
 	Token string
@@ -1452,14 +1481,15 @@ func init() {
 
 func main() {
 	// Create a new Discord session using the provided bot token.
-	dg, err := discordgo.New("Bot " + Token)
+	var err error
+	Session, err = discordgo.New("Bot " + Token)
 	if err != nil {
 		fmt.Println("error creating Discord session,", err)
 		return
 	}
 
 	// Get the account information.
-	u, err := dg.User("@me")
+	u, err := Session.User("@me")
 	if err != nil {
 		fmt.Println("error obtaining account details,", err)
 		return
@@ -1469,18 +1499,18 @@ func main() {
 	BotID = u.ID
 
 	// Register messageCreate as a callback for the messageCreate events.
-	dg.AddHandler(messageCreate)
+	Session.AddHandler(messageCreate)
 
 	// Open the websocket and begin listening.
-	err = dg.Open()
+	err = Session.Open()
 	if err != nil {
 		fmt.Println("error opening connection,", err)
 		return
 	}
-	defer dg.Close()
+	defer Session.Close()
 
 	// Update bot status, giving users a starting point.
-	err = dg.UpdateStatus(0, "type "+draftCommands.prefix)
+	err = Session.UpdateStatus(0, "type "+draftCommands.prefix)
 	if err != nil {
 		fmt.Println("error updating bot status,", err)
 	}
