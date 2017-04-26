@@ -749,6 +749,23 @@ func messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 	handleChat(s, m)
 }
 
+func updateBotStatus(s *discordgo.Session) error {
+	// Update bot status, giving users a starting point.
+	err := s.UpdateStatus(0, "type "+draftCommands.prefix)
+	if err != nil {
+		fmt.Println("error updating bot status,", err)
+	}
+	return err
+}
+
+func onReady(s *discordgo.Session, m *discordgo.Ready) {
+	updateBotStatus(s)
+}
+
+func onResumed(s *discordgo.Session, m *discordgo.Resumed) {
+	updateBotStatus(s)
+}
+
 var (
 	index = 1
 )
@@ -1498,8 +1515,10 @@ func main() {
 	// Store the account ID for later use.
 	BotID = u.ID
 
-	// Register messageCreate as a callback for the messageCreate events.
+	// Register event callbacks.
 	Session.AddHandler(messageCreate)
+	Session.AddHandler(onReady)
+	Session.AddHandler(onResumed)
 
 	// Open the websocket and begin listening.
 	err = Session.Open()
@@ -1508,12 +1527,6 @@ func main() {
 		return
 	}
 	defer Session.Close()
-
-	// Update bot status, giving users a starting point.
-	err = Session.UpdateStatus(0, "type "+draftCommands.prefix)
-	if err != nil {
-		fmt.Println("error updating bot status,", err)
-	}
 
 	fmt.Println("Bot is now running. Press CTRL-C to exit.")
 
