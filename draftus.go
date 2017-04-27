@@ -1196,16 +1196,16 @@ func handleWho(args string, s *discordgo.Session, m *discordgo.MessageCreate) {
 			// Apparently, ContentWithMentionsReplaced *doesn't* replace @everyone...
 			previous := strings.Replace(pinned.ContentWithMentionsReplaced(), "@everyone", "everyone", -1)
 
-			message += "\n\n__***Last cup message (pinned"
+			message += "\n\n__***Last cup message ("
 			when, err := pinned.Timestamp.Parse()
 			if err == nil {
 				delta := time.Now().Sub(when)
 				// Only mention elapsed time if it's in the past...
 				if delta > 0 {
-					message += " " + humanize(delta) + " ago"
+					message += "from " + humanize(delta) + " ago, "
 				}
 			}
-			message += "):***__\n\n" + previous
+			message += "pinned):***__\n\n" + previous
 		}
 		_, _ = s.ChannelMessageSend(m.ChannelID, message)
 		return
