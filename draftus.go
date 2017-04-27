@@ -573,6 +573,31 @@ func lastPinned(s *discordgo.Session, ChannelID string) (*discordgo.Message, err
 	return nil, nil
 }
 
+func getActiveGuildChannels(s *discordgo.Session, GuildID string) ([]*discordgo.Channel, error) {
+	channels, err := s.GuildChannels(GuildID)
+	if err != nil {
+		return nil, err
+	}
+	for i := 0; i < len(channels); {
+		channel := channels[i]
+		cup := getCup(channel.ID)
+		if cup != nil {
+			i++
+			continue
+		}
+		channels = append(channels[:i], channels[i+1:]...)
+	}
+	return channels, nil
+}
+
+func getAlternativeChannels(s *discordgo.Session, ChannelID string) ([]*discordgo.Channel, error) {
+	channel, err := s.Channel(ChannelID)
+	if err != nil {
+		return nil, err
+	}
+	return getActiveGuildChannels(s, channel.GuildID)
+}
+
 func (currentCup *Cup) save() error {
 	if len(ChannelDataDir) <= 0 {
 		return os.ErrInvalid
@@ -871,7 +896,29 @@ func handleAbort(args string, s *discordgo.Session, m *discordgo.MessageCreate) 
 func handleAdd(args string, s *discordgo.Session, m *discordgo.MessageCreate) {
 	currentCup := getCup(m.ChannelID)
 	if currentCup == nil || currentCup.Status == CupStatusInactive {
-		_, _ = s.ChannelMessageSend(m.ChannelID, "No cup in progress in this channel. You can start one with "+bold(commandStart.syntax()))
+		// If there are active cups in other channels, we let the user know.
+		others, _ := getAlternativeChannels(s, m.ChannelID)
+		if len(others) <= 0 {
+			_, _ = s.ChannelMessageSend(m.ChannelID, "No cup in progress in this channel. You can start one with "+bold(commandStart.syntax()))
+			return
+		}
+
+		message := ""
+		for i, channel := range others {
+			if i != 0 {
+				if i == len(others)-1 {
+					message += " or "
+				} else {
+					message += ", "
+				}
+			}
+			message += "<#" + channel.ID + ">"
+		}
+
+		message = "There's no cup in progress in this channel, " + bold(escape(m.Author.Username)) +
+			".\nTry again in " + message + ", or start a new cup here with " + bold(commandStart.syntax())
+		_, _ = s.ChannelMessageSend(m.ChannelID, message)
+
 		return
 	}
 
