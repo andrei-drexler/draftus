@@ -849,6 +849,7 @@ func handleAbort(args string, s *discordgo.Session, m *discordgo.MessageCreate) 
 	}
 
 	_, _ = s.ChannelMessageSend(m.ChannelID, "Cup aborted by "+bold(escape(m.Author.Username))+". You can start a new one with "+bold(commandStart.syntax()))
+	currentCup.unpinAll(s)
 	deleteCup(m.ChannelID)
 }
 
@@ -977,6 +978,7 @@ func handleClose(args string, s *discordgo.Session, m *discordgo.MessageCreate) 
 			}
 			s.ChannelMessageDelete(m.ChannelID, m.ID)
 			_, _ = s.ChannelMessageSend(currentCup.ChannelID, who+" signed up, cup aborted.")
+			currentCup.unpinAll(s)
 			deleteCup(m.ChannelID)
 			return
 		}
