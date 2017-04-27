@@ -581,7 +581,7 @@ func getActiveGuildChannels(s *discordgo.Session, GuildID string) ([]*discordgo.
 	for i := 0; i < len(channels); {
 		channel := channels[i]
 		cup := getCup(channel.ID)
-		if cup != nil {
+		if cup != nil && cup.Status != CupStatusInactive {
 			i++
 			continue
 		}
@@ -915,8 +915,8 @@ func handleAdd(args string, s *discordgo.Session, m *discordgo.MessageCreate) {
 			message += "<#" + channel.ID + ">"
 		}
 
-		message = "There's no cup in progress in this channel, " + bold(escape(m.Author.Username)) +
-			".\nTry again in " + message + ", or start a new cup here with " + bold(commandStart.syntax())
+		message = bold(escape(m.Author.Username)) + ", there's no cup in progress in this channel.\nTry again in " +
+			message + ", or start a new cup here with " + bold(commandStart.syntax())
 		_, _ = s.ChannelMessageSend(m.ChannelID, message)
 
 		return
