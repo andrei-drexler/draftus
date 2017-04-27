@@ -564,7 +564,7 @@ func (currentCup *Cup) save() error {
 		return os.ErrInvalid
 	}
 
-	err := os.MkdirAll(ChannelDataDir, SaveFilePermission)
+	err := os.MkdirAll(ChannelDataDir, 0777)
 	if err != nil {
 		return err
 	}
