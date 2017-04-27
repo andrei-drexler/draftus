@@ -559,6 +559,20 @@ func (currentCup *Cup) unpinAll(s *discordgo.Session) {
 	}
 }
 
+func lastPinned(s *discordgo.Session, ChannelID string) (*discordgo.Message, error) {
+	allPinned, err := s.ChannelMessagesPinned(ChannelID)
+	if err != nil {
+		return nil, err
+	}
+	for i := len(allPinned) - 1; i >= 0; i-- {
+		pinnedMessage := allPinned[i]
+		if pinnedMessage.Author.ID == BotID {
+			return pinnedMessage, nil
+		}
+	}
+	return nil, nil
+}
+
 func (currentCup *Cup) save() error {
 	if len(ChannelDataDir) <= 0 {
 		return os.ErrInvalid
@@ -1116,7 +1130,8 @@ func handlePick(args string, s *discordgo.Session, m *discordgo.MessageCreate) {
 
 			text = "Teams are now complete and the games can begin!\n" +
 				display(&currentCup.Manager) + " will take things from here, setting up matches and tracking scores.\n\n" +
-				currentCup.report(CupReportTeams|CupReportSubs|CupReportNextAction) + "@everyone"
+				currentCup.report(CupReportTeams|CupReportSubs) +
+				"Good luck and have fun, @everyone!"
 
 			lastMessage, err := s.ChannelMessageSend(currentCup.ChannelID, text)
 			if err == nil {
@@ -1175,7 +1190,14 @@ func handlePromote(args string, s *discordgo.Session, m *discordgo.MessageCreate
 func handleWho(args string, s *discordgo.Session, m *discordgo.MessageCreate) {
 	currentCup := getCup(m.ChannelID)
 	if currentCup == nil || currentCup.Status == CupStatusInactive {
-		_, _ = s.ChannelMessageSend(m.ChannelID, "No cup in progress in this channel. You can start one with "+bold(commandStart.syntax()))
+		message := "No cup in progress in this channel. You can start one with " + bold(commandStart.syntax())
+		pinned, _ := lastPinned(s, m.ChannelID)
+		if pinned != nil {
+			// apparently, ContentWithMentionsReplaced *doesn't* replace @everyone...
+			previous := strings.Replace(pinned.ContentWithMentionsReplaced(), "@everyone", "everyone", -1)
+			message += "\n\n__***Last cup message (pinned):***__\n\n" + previous
+		}
+		_, _ = s.ChannelMessageSend(m.ChannelID, message)
 		return
 	}
 	currentCup.deleteAndReply(s, m, "", CupReportAll)
