@@ -260,7 +260,7 @@ func (currentCup *Cup) isSuperUser(id string) bool {
 		return false
 	}
 
-	var adminRoles = [...]string{
+	adminRoles := [...]string{
 		"DraftusAdmin",
 		"Admins",
 		"Admin",
@@ -1011,8 +1011,8 @@ func handleClose(args string, s *discordgo.Session, m *discordgo.MessageCreate) 
 		_, _ = s.ChannelMessageSend(m.ChannelID, "No cup in progress in this channel, no sign-ups to close.")
 		return
 	}
-	if !currentCup.isSuperUser(m.Author.ID) {
-		_, _ = s.ChannelMessageSend(m.ChannelID, "Only "+display(&currentCup.Manager)+", the cup manager, or an admin can close the cup.")
+	if !currentCup.isManager(m.Author.ID) {
+		_, _ = s.ChannelMessageSend(m.ChannelID, "Only "+display(&currentCup.Manager)+", the cup manager, can close it.")
 		return
 	}
 
@@ -1272,8 +1272,8 @@ func handleModerate(args string, s *discordgo.Session, m *discordgo.MessageCreat
 		return
 	}
 
-	if m.Author.ID != currentCup.Manager.ID {
-		_, _ = s.ChannelMessageSend(m.ChannelID, "Only "+display(&currentCup.Manager)+", the cup manager, can enable or disable moderation.")
+	if !currentCup.isSuperUser(m.Author.ID) {
+		_, _ = s.ChannelMessageSend(m.ChannelID, "Only "+display(&currentCup.Manager)+", the cup manager, or an admin can enable or disable moderation.")
 		currentCup.reply(s, "", CupReportAll^CupReportSubs)
 		return
 	}
