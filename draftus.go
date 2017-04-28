@@ -722,7 +722,7 @@ func mentionUser(UserID string) string {
 	return "<@" + UserID + ">"
 }
 
-func mentionChannel(ID string) string {
+func mentionChannel(ChannelID string) string {
 	return "<#" + ChannelID + ">"
 }
 
@@ -958,7 +958,7 @@ func handleAdd(args string, s *discordgo.Session, m *discordgo.MessageCreate) {
 		} else {
 			currentCup.Players = append(currentCup.Players, makePlayer(m.Author))
 			if currentCup.Status != CupStatusSignup {
-				message := bold(escape(m.Author.Username)) + " joined the cup as substitute #" + strconv.Itoa(len(currentCup.Players)-currentCup.activePlayerCount())
+				message := mentionUser(m.Author.ID) + " joined the cup as " + nth(len(currentCup.Players)-currentCup.activePlayerCount()) + " substitute."
 				_, _ = s.ChannelMessageSend(m.ChannelID, message)
 			}
 			currentCup.deleteAndReply(s, m, "", CupReportAll)
@@ -980,7 +980,7 @@ func handleRemove(args string, s *discordgo.Session, m *discordgo.MessageCreate)
 	}
 
 	switch currentCup.Status {
-	case CupStatusSignup:
+	case CupStatusSignup, CupStatusPickup:
 		if len(currentCup.Players) == 0 {
 			_, _ = s.ChannelMessageSend(m.ChannelID, "No players to remove, nobody has signed up for the cup yet.")
 			return
@@ -1023,6 +1023,39 @@ func handleRemove(args string, s *discordgo.Session, m *discordgo.MessageCreate)
 				_, _ = s.ChannelMessageSend(m.ChannelID, bold(escape(m.Author.Username))+", you're not registered for this cup anyway.")
 				currentCup.reply(s, "", CupReportAll)
 				return
+			}
+		}
+
+		if currentCup.Status >= CupStatusPickup {
+			active := currentCup.activePlayerCount()
+			player := &currentCup.Players[which]
+
+			// if the player to be removed isn't a substitute
+			if which < active {
+				// ...but a substitute is available
+				if active < len(currentCup.Players) {
+					sub := &currentCup.Players[active]
+					sub.ID, player.ID = player.ID, sub.ID
+					sub.Name, player.Name = player.Name, sub.Name
+					which = active
+					message := mention(player) + " has left the cup and " + mention(sub) + " will take his place."
+					s.ChannelMessageSend(m.ChannelID, message)
+				} else {
+					var target string
+					if m.Author.ID == player.ID {
+						target = "you"
+					} else {
+						target = mention(player)
+					}
+
+					message := bold(escape(m.Author.Username)) + ", there's no substitute available to replace " + target +
+						".\nYou need to find a substitute first and have him sign up by typing " + bold(commandAdd.syntax())
+					s.ChannelMessageSend(m.ChannelID, message)
+					return
+				}
+			} else {
+				message := mention(player) + " has left the cup."
+				s.ChannelMessageSend(m.ChannelID, message)
 			}
 		}
 
