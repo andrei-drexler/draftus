@@ -963,8 +963,8 @@ func handleRemove(args string, s *discordgo.Session, m *discordgo.MessageCreate)
 		var token string
 		token, args = parseToken(args)
 		if len(token) > 0 {
-			if !currentCup.isSuperUser(m.Author.ID) {
-				message := "Only the cup manager, " + display(&currentCup.Manager) + ", or an admin can remove other players.\n"
+			if !currentCup.isManager(m.Author.ID) {
+				message := "Only the cup manager, " + display(&currentCup.Manager) + ", can remove other players.\n"
 				if currentCup.findPlayer(m.Author.ID) != -1 {
 					message += "You can remove yourself by typing " + bold(commandRemove.syntaxNoArgs())
 				}
