@@ -578,16 +578,15 @@ func getActiveGuildChannels(s *discordgo.Session, GuildID string) ([]*discordgo.
 	if err != nil {
 		return nil, err
 	}
-	for i := 0; i < len(channels); {
-		channel := channels[i]
+	count := 0
+	for _, channel := range channels {
 		cup := getCup(channel.ID)
 		if cup != nil && cup.Status != CupStatusInactive {
-			i++
-			continue
+			channels[count] = channel
+			count++
 		}
-		channels = append(channels[:i], channels[i+1:]...)
 	}
-	return channels, nil
+	return channels[:count], nil
 }
 
 func getAlternativeChannels(s *discordgo.Session, ChannelID string) ([]*discordgo.Channel, error) {
