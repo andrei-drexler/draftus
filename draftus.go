@@ -718,8 +718,16 @@ func bolditalic(s string) string {
 	return "***" + s + "***"
 }
 
+func mentionUser(UserID string) string {
+	return "<@" + UserID + ">"
+}
+
+func mentionChannel(ID string) string {
+	return "<#" + ChannelID + ">"
+}
+
 func mention(who *Player) string {
-	return "<@" + who.ID + ">"
+	return mentionUser(who.ID)
 }
 
 func display(who *Player) string {
@@ -941,8 +949,7 @@ func handleAdd(args string, s *discordgo.Session, m *discordgo.MessageCreate) {
 	}
 
 	switch currentCup.Status {
-	case CupStatusPickup:
-	case CupStatusSignup:
+	case CupStatusSignup, CupStatusPickup:
 		before := currentCup.findPlayer(m.Author.ID)
 		if before != -1 && !devHacks.allowDuplicates {
 			message := bold(escape(m.Author.Username)) + ", you're already registered for this cup (" + nth(before+1) + " of " + strconv.Itoa(len(currentCup.Players)) + ")."
@@ -950,6 +957,10 @@ func handleAdd(args string, s *discordgo.Session, m *discordgo.MessageCreate) {
 			currentCup.reply(s, "", CupReportAll)
 		} else {
 			currentCup.Players = append(currentCup.Players, makePlayer(m.Author))
+			if currentCup.Status != CupStatusSignup {
+				message := bold(escape(m.Author.Username)) + " joined the cup as substitute #" + strconv.Itoa(len(currentCup.Players)-currentCup.activePlayerCount())
+				_, _ = s.ChannelMessageSend(m.ChannelID, message)
+			}
 			currentCup.deleteAndReply(s, m, "", CupReportAll)
 		}
 
