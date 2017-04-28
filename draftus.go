@@ -48,6 +48,7 @@ var (
 	commandClose    command
 	commandPick     command
 	commandPromote  command
+	commandReopen   command
 
 	draftCommands = commandGroup{
 		prefix:      "?draft",
@@ -63,6 +64,7 @@ var (
 			&commandClose,
 			&commandPick,
 			&commandPromote,
+			&commandReopen,
 		},
 	}
 
@@ -175,6 +177,11 @@ func makePlayer(user *discordgo.User) Player {
 		Team: -1,
 		Next: -1,
 	}
+}
+
+func (player *Player) resetTeam() {
+	player.Team = -1
+	player.Next = -1
 }
 
 func (currentTeam *Team) resetTeam() {
@@ -1328,6 +1335,39 @@ func handleModerate(args string, s *discordgo.Session, m *discordgo.MessageCreat
 	}
 }
 
+// Handle draft reopen command
+func handleReopen(args string, s *discordgo.Session, m *discordgo.MessageCreate) {
+	currentCup := getCup(m.ChannelID)
+	if currentCup == nil || currentCup.Status == CupStatusInactive {
+		_, _ = s.ChannelMessageSend(m.ChannelID, bold(escape(m.Author.Username))+", there's no cup in progress in this channel.\n")
+		return
+	}
+
+	s.ChannelMessageDelete(m.ChannelID, m.ID)
+
+	if currentCup.Status != CupStatusPickup {
+		_, _ = s.ChannelMessageSend(m.ChannelID, bold(escape(m.Author.Username))+", the cup can be only reopen for sign-up after picking has begun.")
+		currentCup.reply(s, "", CupReportAll^CupReportSubs)
+		return
+	}
+
+	if !currentCup.isManager(m.Author.ID) {
+		_, _ = s.ChannelMessageSend(m.ChannelID, "Only "+display(&currentCup.Manager)+", the cup manager, can discard current teams and reopen the cup for sign-up.")
+		currentCup.reply(s, "", CupReportAll^CupReportSubs)
+		return
+	}
+
+	currentCup.Teams = nil
+	for i := range currentCup.Players {
+		player := &currentCup.Players[i]
+		player.resetTeam()
+	}
+	currentCup.Status = CupStatusSignup
+
+	_, _ = s.ChannelMessageSend(m.ChannelID, bold(escape(m.Author.Username))+" discarded the teams and reopened the cup.")
+	currentCup.reply(s, "", CupReportAll)
+}
+
 // Handle draft cup help command
 func handleHelp(args string, s *discordgo.Session, m *discordgo.MessageCreate) {
 	message := "Supported commands:\n```Note: arguments marked [] are optional, <> are mandatory.\n\n"
@@ -1613,6 +1653,13 @@ func init() {
 		args:    "",
 		execute: handlePromote,
 		help:    "Promote the cup",
+	}
+	commandReopen = command{
+		group:   &draftCommands,
+		name:    "reopen",
+		args:    "",
+		execute: handleReopen,
+		help:    "Discard current teams and reopen cup for sign-up",
 	}
 
 	exe, err := os.Executable()
