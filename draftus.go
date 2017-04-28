@@ -1288,7 +1288,6 @@ func handleModerate(args string, s *discordgo.Session, m *discordgo.MessageCreat
 	currentCup := getCup(m.ChannelID)
 	if currentCup == nil || currentCup.Status == CupStatusInactive {
 		_, _ = s.ChannelMessageSend(m.ChannelID, bold(escape(m.Author.Username))+", moderation can only be enabled when a cup is active.\n")
-		currentCup.reply(s, "", CupReportAll^CupReportSubs)
 		return
 	}
 
