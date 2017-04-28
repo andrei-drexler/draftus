@@ -1685,7 +1685,7 @@ func init() {
 		name:    "moderate",
 		args:    " [on|off]",
 		execute: handleModerate,
-		help:    "Enables/disables or toggles channel moderation when a cup is active",
+		help:    "Enable/disable or toggle channel moderation when a cup is active",
 	}
 	commandClose = command{
 		group:   &draftCommands,
