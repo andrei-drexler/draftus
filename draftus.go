@@ -1021,10 +1021,13 @@ func handleClose(args string, s *discordgo.Session, m *discordgo.MessageCreate) 
 		_, _ = s.ChannelMessageSend(m.ChannelID, "No cup in progress in this channel, no sign-ups to close.")
 		return
 	}
+
 	if !currentCup.isManager(m.Author.ID) {
-		_, _ = s.ChannelMessageSend(m.ChannelID, "Only "+display(&currentCup.Manager)+", the cup manager, can close it.")
+		_, _ = s.ChannelMessageSend(m.ChannelID, "Only "+display(&currentCup.Manager)+", the cup manager, can close sign-up.")
 		return
 	}
+
+	s.ChannelMessageDelete(m.ChannelID, m.ID)
 
 	switch currentCup.Status {
 	case CupStatusSignup:
@@ -1046,7 +1049,6 @@ func handleClose(args string, s *discordgo.Session, m *discordgo.MessageCreate) 
 			} else {
 				who = "Only " + numbered(signedUp, "player")
 			}
-			s.ChannelMessageDelete(m.ChannelID, m.ID)
 			_, _ = s.ChannelMessageSend(currentCup.ChannelID, who+" signed up, cup aborted.")
 			currentCup.unpinAll(s)
 			deleteCup(m.ChannelID)
@@ -1089,7 +1091,7 @@ func handleClose(args string, s *discordgo.Session, m *discordgo.MessageCreate) 
 		currentCup.chooseTeamNames()
 
 		message := fmt.Sprintf("Cup registration is now closed.\n\n")
-		currentCup.deleteAndReply(s, m, message, CupReportAll)
+		currentCup.reply(s, message, CupReportAll)
 
 	default:
 		_, _ = s.ChannelMessageSend(m.ChannelID, "Too late, "+bold(escape(m.Author.Username))+", registration for this cup is already closed.")
