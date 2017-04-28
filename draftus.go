@@ -606,6 +606,37 @@ func getAlternativeChannels(s *discordgo.Session, ChannelID string) ([]*discordg
 	return getActiveGuildChannels(s, channel.GuildID)
 }
 
+func mentionChannelAlternatives(s *discordgo.Session, ChannelID string) (message string, err error) {
+	others, err := getAlternativeChannels(s, ChannelID)
+	if err != nil {
+		return
+	}
+
+	for i, channel := range others {
+		if i != 0 {
+			if i == len(others)-1 {
+				message += " or "
+			} else {
+				message += ", "
+			}
+		}
+		message += "<#" + channel.ID + ">"
+	}
+
+	return
+}
+
+func noCupHereMessage(s *discordgo.Session, m *discordgo.MessageCreate) string {
+	// If there are active cups in other channels, we let the user know.
+	alternatives, _ := mentionChannelAlternatives(s, m.ChannelID)
+	if len(alternatives) <= 0 {
+		return "No cup in progress in this channel. You can start one with " + bold(commandStart.syntax())
+	}
+
+	return bold(escape(m.Author.Username)) + ", there's no cup in progress in this channel.\nTry again in " +
+		alternatives + ", or start a new cup here with " + bold(commandStart.syntax())
+}
+
 func (currentCup *Cup) save() error {
 	if len(ChannelDataDir) <= 0 {
 		return os.ErrInvalid
@@ -905,29 +936,7 @@ func handleAbort(args string, s *discordgo.Session, m *discordgo.MessageCreate) 
 func handleAdd(args string, s *discordgo.Session, m *discordgo.MessageCreate) {
 	currentCup := getCup(m.ChannelID)
 	if currentCup == nil || currentCup.Status == CupStatusInactive {
-		// If there are active cups in other channels, we let the user know.
-		others, _ := getAlternativeChannels(s, m.ChannelID)
-		if len(others) <= 0 {
-			_, _ = s.ChannelMessageSend(m.ChannelID, "No cup in progress in this channel. You can start one with "+bold(commandStart.syntax()))
-			return
-		}
-
-		message := ""
-		for i, channel := range others {
-			if i != 0 {
-				if i == len(others)-1 {
-					message += " or "
-				} else {
-					message += ", "
-				}
-			}
-			message += "<#" + channel.ID + ">"
-		}
-
-		message = bold(escape(m.Author.Username)) + ", there's no cup in progress in this channel.\nTry again in " +
-			message + ", or start a new cup here with " + bold(commandStart.syntax())
-		_, _ = s.ChannelMessageSend(m.ChannelID, message)
-
+		_, _ = s.ChannelMessageSend(m.ChannelID, noCupHereMessage(s, m))
 		return
 	}
 
@@ -1216,7 +1225,7 @@ func handlePick(args string, s *discordgo.Session, m *discordgo.MessageCreate) {
 func handlePromote(args string, s *discordgo.Session, m *discordgo.MessageCreate) {
 	currentCup := getCup(m.ChannelID)
 	if currentCup == nil || currentCup.Status == CupStatusInactive {
-		_, _ = s.ChannelMessageSend(m.ChannelID, "No cup in progress in this channel. You can start one with "+bold(commandStart.syntax()))
+		_, _ = s.ChannelMessageSend(m.ChannelID, noCupHereMessage(s, m))
 		return
 	}
 
@@ -1256,22 +1265,22 @@ func handlePromote(args string, s *discordgo.Session, m *discordgo.MessageCreate
 func handleWho(args string, s *discordgo.Session, m *discordgo.MessageCreate) {
 	currentCup := getCup(m.ChannelID)
 	if currentCup == nil || currentCup.Status == CupStatusInactive {
-		message := "No cup in progress in this channel. You can start one with " + bold(commandStart.syntax())
+		message := noCupHereMessage(s, m)
 		pinned, _ := lastPinned(s, m.ChannelID)
 		if pinned != nil {
 			// Apparently, ContentWithMentionsReplaced *doesn't* replace @everyone...
 			previous := strings.Replace(pinned.ContentWithMentionsReplaced(), "@everyone", "everyone", -1)
 
-			message += "\n\n__***Last cup message ("
+			message += "\n\n__***Last pinned cup message"
 			when, err := pinned.Timestamp.Parse()
 			if err == nil {
 				delta := time.Now().Sub(when)
 				// Only mention elapsed time if it's in the past...
 				if delta > 0 {
-					message += "from " + humanize(delta) + " ago, "
+					message += " (from " + humanize(delta) + " ago)"
 				}
 			}
-			message += "pinned):***__\n\n" + previous
+			message += ":***__\n\n" + previous
 		}
 		_, _ = s.ChannelMessageSend(m.ChannelID, message)
 		return
