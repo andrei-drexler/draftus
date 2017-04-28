@@ -111,7 +111,8 @@ const (
 
 // Minimum amount of time that has to pass between promotions
 const (
-	MinimumPromotionInterval = time.Minute * 15
+	MinimumPromotionInterval        = time.Hour * 2
+	MinimumPromotionIntervalManager = time.Minute * 15
 )
 
 type (
@@ -139,19 +140,20 @@ type (
 
 	// Cup holds data for an ongoing event
 	Cup struct {
-		Status          int
-		Moderated       bool
-		PickedPlayers   int
-		Manager         Player
-		Players         []Player
-		Teams           []Team
-		ChannelID       string
-		GuildID         string
-		StartMessageID  string
-		LastReplyID     string
-		Description     string
-		StartTime       time.Time
-		NextPromoteTime time.Time
+		Status                 int
+		Moderated              bool
+		PickedPlayers          int
+		Manager                Player
+		Players                []Player
+		Teams                  []Team
+		ChannelID              string
+		GuildID                string
+		StartMessageID         string
+		LastReplyID            string
+		Description            string
+		StartTime              time.Time
+		NextPromoteTime        time.Time
+		NextPromoteTimeManager time.Time
 
 		longestTeamName        int // for nicer string formatting
 		longestTeamDescription int // ditto
@@ -860,6 +862,7 @@ func handleStart(args string, s *discordgo.Session, m *discordgo.MessageCreate) 
 
 	currentCup.StartTime = time.Now()
 	currentCup.NextPromoteTime = currentCup.StartTime.Add(MinimumPromotionInterval)
+	currentCup.NextPromoteTimeManager = currentCup.StartTime.Add(MinimumPromotionIntervalManager)
 
 	s.ChannelMessageDelete(m.ChannelID, m.ID)
 	message, err := s.ChannelMessageSend(currentCup.ChannelID, text)
@@ -1215,14 +1218,22 @@ func handlePromote(args string, s *discordgo.Session, m *discordgo.MessageCreate
 
 	s.ChannelMessageDelete(m.ChannelID, m.ID)
 
+	var nextTime *time.Time
+	if currentCup.isSuperUser(m.Author.ID) {
+		nextTime = &currentCup.NextPromoteTimeManager
+	} else {
+		nextTime = &currentCup.NextPromoteTime
+	}
+
 	now := time.Now()
-	remaining := currentCup.NextPromoteTime.Sub(now)
+	remaining := nextTime.Sub(now)
 	if remaining > 0 {
 		_, _ = s.ChannelMessageSend(m.ChannelID, "Too soon to promote, "+bold(escape(m.Author.Username))+". You can try again in "+humanize(remaining)+".")
 		return
 	}
 
 	currentCup.NextPromoteTime = now.Add(MinimumPromotionInterval)
+	currentCup.NextPromoteTimeManager = now.Add(MinimumPromotionIntervalManager)
 
 	text := "Hey, @everyone!\n\nDon't forget that registration is now open for a new draft cup, managed by " + display(&currentCup.Manager) + ".\n"
 	if len(currentCup.Description) > 0 {
