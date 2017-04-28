@@ -1297,7 +1297,7 @@ func handleModerate(args string, s *discordgo.Session, m *discordgo.MessageCreat
 		return
 	}
 
-	moderation := true
+	moderation := !currentCup.Moderated
 
 	var token string
 	token, args = parseToken(args)
@@ -1630,9 +1630,9 @@ func init() {
 	commandModerate = command{
 		group:   &draftCommands,
 		name:    "moderate",
-		args:    " <on|off>",
+		args:    " [on|off]",
 		execute: handleModerate,
-		help:    "Enables or disables channel moderation when the cup is active",
+		help:    "Enables/disables or toggles channel moderation when a cup is active",
 	}
 	commandClose = command{
 		group:   &draftCommands,
