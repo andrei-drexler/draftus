@@ -1431,7 +1431,7 @@ func handleHelp(args string, s *discordgo.Session, m *discordgo.MessageCreate) {
 			message += "\n"
 		}
 
-		if len(commandGroups) > 0 {
+		if len(commandGroups) > 1 {
 			message += group.description + ":\n"
 		}
 
