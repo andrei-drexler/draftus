@@ -1136,6 +1136,7 @@ func handleClose(args string, s *discordgo.Session, m *discordgo.MessageCreate) 
 		numTeams := signedUp / TeamSize
 
 		currentCup.Status = CupStatusPickup
+		currentCup.PickedPlayers = 0
 		currentCup.Teams = make([]Team, numTeams)
 		for i := 0; i < numTeams; i++ {
 			currentTeam := &currentCup.Teams[i]
@@ -1417,6 +1418,7 @@ func handleReopen(args string, s *discordgo.Session, m *discordgo.MessageCreate)
 		player.resetTeam()
 	}
 	currentCup.Status = CupStatusSignup
+	currentCup.PickedPlayers = 0
 
 	_, _ = s.ChannelMessageSend(m.ChannelID, bold(escape(m.Author.Username))+" discarded the teams and reopened the cup.")
 	currentCup.reply(s, "", CupReportAll)
