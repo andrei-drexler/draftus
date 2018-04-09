@@ -24,9 +24,8 @@ const (
 
 // Player counts
 const (
-	TeamSize       = 4
-	MinimumTeams   = 2
-	MinimumPlayers = TeamSize * MinimumTeams
+	DefaultTeamSize = 4
+	MinimumTeams    = 2
 )
 
 // Cup report fields
@@ -84,6 +83,7 @@ type (
 		StartTime              time.Time
 		NextPromoteTime        time.Time
 		NextPromoteTimeManager time.Time
+		TeamSize               int
 
 		longestTeamName        int // for nicer string formatting
 		longestTeamDescription int // ditto
@@ -142,6 +142,7 @@ func addCup(channelID string) *Cup {
 	currentCup := new(Cup)
 	currentCup.Status = CupStatusSignup
 	currentCup.ChannelID = channelID
+	currentCup.TeamSize = DefaultTeamSize
 
 	lockCups.Lock()
 	activeCups[channelID] = currentCup
@@ -234,16 +235,21 @@ func (currentCup *Cup) isSuperUser(id string) bool {
 
 func (currentCup *Cup) targetPlayerCount() int {
 	target := len(currentCup.Players)
-	target += TeamSize - 1
-	target -= target % TeamSize
-	if target < MinimumPlayers {
-		target = MinimumPlayers
+	target += currentCup.TeamSize - 1
+	target -= target % currentCup.TeamSize
+	minPlayers := currentCup.minPlayerCount()
+	if target < minPlayers {
+		target = minPlayers
 	}
 	return target
 }
 
 func (currentCup *Cup) activePlayerCount() int {
-	return len(currentCup.Teams) * TeamSize
+	return len(currentCup.Teams) * currentCup.TeamSize
+}
+
+func (currentCup *Cup) minPlayerCount() int {
+	return currentCup.TeamSize * MinimumTeams
 }
 
 func (currentCup *Cup) currentPickup() pickupSlot {
@@ -264,7 +270,7 @@ func (currentCup *Cup) whoPicks(pickup pickupSlot) *Player {
 	if currentCup.Status != CupStatusPickup {
 		return nil
 	}
-	if pickup.Player < 0 || pickup.Player >= TeamSize {
+	if pickup.Player < 0 || pickup.Player >= currentCup.TeamSize {
 		return nil
 	}
 	if pickup.Team < 0 || pickup.Team >= len(currentCup.Teams) {
@@ -654,6 +660,10 @@ func resumeState() error {
 		if currentCup.ChannelID != name {
 			fmt.Printf("File name/channel ID mismatch: '%s' vs '%s', ignoring...\n", name, currentCup.ChannelID)
 			continue
+		}
+
+		if currentCup.TeamSize == 0 {
+			currentCup.TeamSize = DefaultTeamSize
 		}
 
 		currentCup.updateTeamNameCache()

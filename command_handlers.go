@@ -233,7 +233,8 @@ func handleClose(args string, s *discordgo.Session, m *discordgo.MessageCreate) 
 		}
 
 		signedUp := len(currentCup.Players)
-		if signedUp < MinimumPlayers {
+		minPlayers := currentCup.minPlayerCount()
+		if signedUp < minPlayers {
 			var who string
 			if signedUp == 0 {
 				who = "Nobody"
@@ -262,8 +263,8 @@ func handleClose(args string, s *discordgo.Session, m *discordgo.MessageCreate) 
 				currentCup.reply(s, "", CupReportAll)
 				return
 			}
-			if count < MinimumPlayers {
-				message := bold(escape(m.Author.Username)) + ", you need to keep at least " + strconv.Itoa(MinimumPlayers) + " players.\n"
+			if count < minPlayers {
+				message := bold(escape(m.Author.Username)) + ", you need to keep at least " + strconv.Itoa(minPlayers) + " players.\n"
 				_, _ = s.ChannelMessageSend(m.ChannelID, message)
 				currentCup.reply(s, "", CupReportAll)
 				return
@@ -271,7 +272,7 @@ func handleClose(args string, s *discordgo.Session, m *discordgo.MessageCreate) 
 			signedUp = count
 		}
 
-		numTeams := signedUp / TeamSize
+		numTeams := signedUp / currentCup.TeamSize
 
 		currentCup.Status = CupStatusPickup
 		currentCup.PickedPlayers = 0
@@ -560,6 +561,65 @@ func handleReopen(args string, s *discordgo.Session, m *discordgo.MessageCreate)
 
 	_, _ = s.ChannelMessageSend(m.ChannelID, bold(escape(m.Author.Username))+" discarded the teams and reopened the cup.")
 	currentCup.reply(s, "", CupReportAll)
+}
+
+// Handle draft cup teamsize command
+func handleTeamSize(args string, s *discordgo.Session, m *discordgo.MessageCreate) {
+	currentCup := getCup(m.ChannelID)
+	if currentCup == nil || currentCup.Status == CupStatusInactive {
+		_, _ = s.ChannelMessageSend(m.ChannelID, bold(escape(m.Author.Username))+", there's no cup in progress in this channel.\n")
+		return
+	}
+
+	s.ChannelMessageDelete(m.ChannelID, m.ID)
+
+	var token string
+	token, args = parseToken(args)
+	if len(token) <= 0 {
+		message := bold(escape(m.Author.Username)) + ", team size is " + bold(strconv.Itoa(currentCup.TeamSize)) + ".\n"
+		_, _ = s.ChannelMessageSend(m.ChannelID, message)
+		currentCup.reply(s, "", CupReportAll^CupReportSubs)
+		return
+	}
+
+	if !currentCup.isManager(m.Author.ID) {
+		_, _ = s.ChannelMessageSend(m.ChannelID, "Only "+display(&currentCup.Manager)+", the cup manager, can change team size.")
+		currentCup.reply(s, "", CupReportAll^CupReportSubs)
+		return
+	}
+
+	if currentCup.Status != CupStatusSignup {
+		_, _ = s.ChannelMessageSend(m.ChannelID, bold(escape(m.Author.Username))+", you can only change team size during sign-up.")
+		currentCup.reply(s, "", CupReportAll^CupReportSubs)
+		return
+	}
+
+	newSize, err := strconv.Atoi(token)
+	if err != nil {
+		message := bold(escape(m.Author.Username)) + ", '" + token + "' doesn't look like a number.\n\n"
+		_, _ = s.ChannelMessageSend(m.ChannelID, message)
+		currentCup.reply(s, "", CupReportAll^CupReportSubs)
+		return
+	}
+
+	if newSize <= 0 {
+		message := bold(escape(m.Author.Username)) + ", " + token + " is not a valid team size."
+		_, _ = s.ChannelMessageSend(m.ChannelID, message)
+		currentCup.reply(s, "", CupReportAll^CupReportSubs)
+		return
+	}
+
+	if newSize == currentCup.TeamSize {
+		message := bold(escape(m.Author.Username)) + ", team size is already " + token + "."
+		_, _ = s.ChannelMessageSend(m.ChannelID, message)
+		currentCup.reply(s, "", CupReportAll^CupReportSubs)
+		return
+	}
+
+	currentCup.TeamSize = newSize
+
+	_, _ = s.ChannelMessageSend(m.ChannelID, bold(escape(m.Author.Username))+" has changed team size to "+bold(token)+".")
+	currentCup.reply(s, "", CupReportAll^CupReportSubs)
 }
 
 // Handle draft cup help command

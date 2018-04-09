@@ -30,6 +30,7 @@ var (
 	commandRemove   command
 	commandWho      command
 	commandModerate command
+	commandTeamSize command
 	commandClose    command
 	commandPick     command
 	commandPromote  command
@@ -46,6 +47,7 @@ var (
 			&commandRemove,
 			&commandWho,
 			&commandModerate,
+			&commandTeamSize,
 			&commandClose,
 			&commandPick,
 			&commandPromote,
@@ -132,6 +134,13 @@ func setupDraftCommands() {
 		args:    " [on|off]",
 		execute: handleModerate,
 		help:    "Enable/disable or toggle channel moderation when a cup is active",
+	}
+	commandTeamSize = command{
+		group:   &draftCommands,
+		name:    "teamsize",
+		args:    " [number]",
+		execute: handleTeamSize,
+		help:    "Show or change current team size",
 	}
 	commandClose = command{
 		group:   &draftCommands,
