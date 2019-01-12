@@ -26,7 +26,7 @@ var (
 		"Aerodynamic",
 		"Sprinting", "Strafing", "Strafejumping", "Circlejumping", "Bunnyhopping", "Crouching", "Rising", "Standing", "Camping", "Twitchy", "Sniping", "Telefragging",
 		"Rolling", "Dancing", "Breakdancing", "Tapdancing", "Clubbing",
-		"Snorkeling", "Snowbording", "Cycling", "Rollerblading", "Paragliding", "Skydiving",
+		"Snorkeling", "Snowboarding", "Cycling", "Rollerblading", "Paragliding", "Skydiving",
 		"Drifting", "Warping", "Laggy", "Smooth", "Stiff",
 		"Cryogenic", "Mutating", "Undead", "Ghostly", "Possessed", "Supernatural",
 		"Juggling", "Ambidextrous", "Left-handed",
